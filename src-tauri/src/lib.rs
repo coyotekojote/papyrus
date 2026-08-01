@@ -1,0 +1,54 @@
+/// Builds a friendly greeting for the given name.
+///
+/// Trimmed of surrounding whitespace; falls back to "World" when empty.
+fn build_greeting(name: &str) -> String {
+    let trimmed = name.trim();
+    let subject = if trimmed.is_empty() { "World" } else { trimmed };
+    format!("Hello, {subject}! You've been greeted from Rust!")
+}
+
+#[tauri::command]
+fn greet(name: &str) -> String {
+    build_greeting(name)
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .invoke_handler(tauri::generate_handler![greet])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_greeting_uses_the_given_name() {
+        assert_eq!(
+            build_greeting("Papyrus"),
+            "Hello, Papyrus! You've been greeted from Rust!"
+        );
+    }
+
+    #[test]
+    fn build_greeting_trims_surrounding_whitespace() {
+        assert_eq!(
+            build_greeting("  Ada  "),
+            "Hello, Ada! You've been greeted from Rust!"
+        );
+    }
+
+    #[test]
+    fn build_greeting_falls_back_to_world_when_blank() {
+        assert_eq!(
+            build_greeting("   "),
+            "Hello, World! You've been greeted from Rust!"
+        );
+        assert_eq!(
+            build_greeting(""),
+            "Hello, World! You've been greeted from Rust!"
+        );
+    }
+}
