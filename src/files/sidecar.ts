@@ -1,0 +1,155 @@
+import { invoke } from "@tauri-apps/api/core";
+
+/**
+ * Frontend wrapper for the Rust sidecar storage layer (issue #5).
+ *
+ * Notes and annotations live next to the PDF in `<name>.papyrus/` so iCloud
+ * Drive syncs them between devices. Every load returns the file's mtime;
+ * passing it back to save lets the backend reject writes that would clobber
+ * an edit synced from another device (SidecarConflictError → reload first).
+ */
+
+export const ANNOTATIONS_VERSION = 1;
+
+/** Normalized (0-1) page coordinates, zoom/device independent. */
+export interface NormalizedRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface Highlight {
+  id: string;
+  page: number;
+  rects: NormalizedRect[];
+  color: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface Clip {
+  id: string;
+  page: number;
+  rect: NormalizedRect;
+  /** Path relative to the sidecar folder, e.g. `clips/clip-0001.png`. */
+  file: string;
+  createdAt: string;
+}
+
+export interface Annotations {
+  version: number;
+  highlights: Highlight[];
+  clips: Clip[];
+}
+
+export interface LoadedAnnotations {
+  annotations: Annotations;
+  /** null when annotations.json does not exist yet. */
+  modifiedAtMs: number | null;
+}
+
+export interface LoadedNotes {
+  content: string;
+  /** null when notes.md does not exist yet. */
+  modifiedAtMs: number | null;
+}
+
+/** Snapshot of sidecar file mtimes, for polling external (iCloud) changes. */
+export interface SidecarStatus {
+  notesModifiedAtMs: number | null;
+  annotationsModifiedAtMs: number | null;
+}
+
+interface BackendError {
+  kind: string;
+  path?: string;
+  found?: number;
+  supported?: number;
+  message?: string;
+}
+
+/** The file changed on disk since it was loaded — reload before saving. */
+export class SidecarConflictError extends Error {
+  constructor(readonly path: string) {
+    super(`Sidecar file changed on disk: ${path}`);
+    this.name = "SidecarConflictError";
+  }
+}
+
+export function emptyAnnotations(): Annotations {
+  return { version: ANNOTATIONS_VERSION, highlights: [], clips: [] };
+}
+
+function isBackendError(error: unknown): error is BackendError {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    typeof (error as BackendError).kind === "string"
+  );
+}
+
+function toError(error: unknown): Error {
+  if (isBackendError(error)) {
+    if (error.kind === "conflict") {
+      return new SidecarConflictError(error.path ?? "");
+    }
+    const detail =
+      error.message ??
+      error.path ??
+      (error.found !== undefined
+        ? `version ${error.found} (supported: ${error.supported})`
+        : "");
+    return new Error(`Sidecar ${error.kind}: ${detail}`);
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function invokeSidecar<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error) {
+    throw toError(error);
+  }
+}
+
+export function loadAnnotations(pdfPath: string): Promise<LoadedAnnotations> {
+  return invokeSidecar("load_annotations", { pdfPath });
+}
+
+/**
+ * Saves and resolves to the new mtime. Pass the mtime from the last load
+ * (null when the file did not exist); a mismatch with the file on disk
+ * rejects with SidecarConflictError.
+ */
+export function saveAnnotations(
+  pdfPath: string,
+  annotations: Annotations,
+  baseModifiedAtMs: number | null,
+): Promise<number> {
+  return invokeSidecar("save_annotations", {
+    pdfPath,
+    annotations,
+    baseModifiedAtMs,
+  });
+}
+
+export function loadNotes(pdfPath: string): Promise<LoadedNotes> {
+  return invokeSidecar("load_notes", { pdfPath });
+}
+
+/** Same conflict contract as {@link saveAnnotations}. */
+export function saveNotes(
+  pdfPath: string,
+  content: string,
+  baseModifiedAtMs: number | null,
+): Promise<number> {
+  return invokeSidecar("save_notes", { pdfPath, content, baseModifiedAtMs });
+}
+
+export function sidecarStatus(pdfPath: string): Promise<SidecarStatus> {
+  return invokeSidecar("sidecar_status", { pdfPath });
+}

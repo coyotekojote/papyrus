@@ -1,3 +1,5 @@
+pub mod sidecar;
+
 /// Builds a friendly greeting for the given name.
 ///
 /// Trimmed of surrounding whitespace; falls back to "World" when empty.
@@ -17,7 +19,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            sidecar::load_annotations,
+            sidecar::save_annotations,
+            sidecar::load_notes,
+            sidecar::save_notes,
+            sidecar::sidecar_status,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
