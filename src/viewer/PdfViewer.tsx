@@ -425,12 +425,12 @@ export function PdfViewer({
         // or off into a panel — is cut back to that page. Text and geometry
         // are taken from the same cut, so the extract always says exactly what
         // the highlight covers.
+        // Only the text layer holds the document's own text; the page also
+        // carries the page-number label, which must never be extracted.
+        const textLayer = selectedPage.querySelector(".textLayer");
         const onPage = range.cloneRange();
-        if (closestPage(range.endContainer) !== selectedPage) {
-          // Cut at the end of the text layer, not of the page: the page also
-          // holds the page-number label, which is not part of the document.
-          const end = selectedPage.querySelector(".textLayer") ?? selectedPage;
-          onPage.setEnd(end, end.childNodes.length);
+        if (textLayer && !textLayer.contains(range.endContainer)) {
+          onPage.setEnd(textLayer, textLayer.childNodes.length);
         }
         const text = onPage.toString().trim();
         const rects = normalizeSelectionRects(

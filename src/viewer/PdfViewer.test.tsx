@@ -760,6 +760,46 @@ describe("PdfViewer", () => {
       expect(saved?.at(-1)?.text).toBe("ページ上の本文");
     });
 
+    it("keeps the page-number label out of the extracted text", async () => {
+      const { user } = await openPanel();
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const textLayer = page.querySelector(".textLayer");
+      const label = page.querySelector(".page__label");
+      if (!textLayer || !label) throw new Error("page 1 is missing its parts");
+      const onPage = document.createElement("span");
+      onPage.textContent = "本文の終わり";
+      textLayer.append(onPage);
+
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      // Dragged past the end of the text and onto the page number, which is
+      // part of the viewer's chrome rather than of the document.
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.setStart(onPage.firstChild as Node, 0);
+      range.setEnd(label.firstChild as Node, 1);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      expect(range.toString()).toBe("本文の終わり1");
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(
+        screen.getByRole("button", { name: "黄色でハイライト" }),
+      );
+
+      await waitFor(() => expect(saveAnnotations).toHaveBeenCalled());
+      const saved = vi
+        .mocked(saveAnnotations)
+        .mock.calls.at(-1)?.[1].highlights;
+      expect(saved?.at(-1)?.text).toBe("本文の終わり");
+    });
+
     it("refuses to create a highlight before the annotations have loaded", async () => {
       vi.mocked(loadAnnotations).mockReturnValue(new Promise(() => {}));
       const { user } = renderViewer();
@@ -769,9 +809,11 @@ describe("PdfViewer", () => {
       if (!page) throw new Error("page 1 is not rendered");
       page.getBoundingClientRect = () =>
         ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const textLayer = page.querySelector(".textLayer");
+      if (!textLayer) throw new Error("page 1 has no text layer");
       const text = document.createElement("span");
       text.textContent = "まだ保存できない本文";
-      page.append(text);
+      textLayer.append(text);
       Range.prototype.getClientRects = () =>
         [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
 
