@@ -1,0 +1,251 @@
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PageSize, PdfDocumentHandle } from "../pdf";
+import { PdfViewer } from "./PdfViewer";
+
+const PAGE_COUNT = 8;
+
+function fakeDoc(pageCount = PAGE_COUNT): PdfDocumentHandle {
+  return {
+    pageCount,
+    getPageSize: vi.fn(async () => ({ width: 100, height: 140 })),
+    renderPage: vi.fn(async () => {}),
+    destroy: vi.fn(async () => {}),
+  };
+}
+
+function pageSizes(pageCount = PAGE_COUNT): PageSize[] {
+  return Array.from({ length: pageCount }, () => ({ width: 100, height: 140 }));
+}
+
+/** Page numbers whose canvas is actually mounted (placeholders have no label). */
+function renderedPages(): number[] {
+  return screen
+    .getAllByText(/^\d+$/)
+    .map((element) => Number(element.textContent))
+    .sort((a, b) => a - b);
+}
+
+/** Page numbers of the first rendered two-page spread, in on-screen order. */
+function firstRenderedPair(): number[] {
+  for (const spread of document.querySelectorAll(".spread")) {
+    const labels = [...spread.querySelectorAll(".page__label")].map((element) =>
+      Number(element.textContent),
+    );
+    if (labels.length === 2) return labels;
+  }
+  throw new Error("no two-page spread is currently rendered");
+}
+
+function scroller(): HTMLElement {
+  const element = document.querySelector(".scroller");
+  if (!element) throw new Error("the scroll container is not rendered");
+  return element as HTMLElement;
+}
+
+/** Lets the rAF-throttled scroll handler run. */
+async function flushScroll() {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+  });
+}
+
+function renderViewer(pageCount = PAGE_COUNT) {
+  const doc = fakeDoc(pageCount);
+  const onClose = vi.fn();
+  render(
+    <PdfViewer
+      doc={doc}
+      pageSizes={pageSizes(pageCount)}
+      fileName="paper.pdf"
+      onClose={onClose}
+    />,
+  );
+  return { doc, onClose, user: userEvent.setup() };
+}
+
+describe("PdfViewer", () => {
+  it("shows the file name and starts on page 1", () => {
+    renderViewer();
+
+    expect(screen.getByTitle("paper.pdf")).toBeInTheDocument();
+    expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+  });
+
+  it("renders only a few pages of a long document, not all of them", () => {
+    renderViewer(200);
+
+    expect(renderedPages().length).toBeLessThanOrEqual(4);
+  });
+
+  it("renders the pages it shows via the injected renderer", () => {
+    const { doc } = renderViewer();
+
+    expect(doc.renderPage).toHaveBeenCalled();
+    expect(vi.mocked(doc.renderPage).mock.calls[0][0]).toBe(1);
+  });
+
+  it("advances with the right arrow in a left-bound book", async () => {
+    const { user } = renderViewer();
+
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+  });
+
+  it("does not move past the first or last page", async () => {
+    const { user } = renderViewer(3);
+
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByText("1 / 3")).toBeInTheDocument();
+
+    await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}");
+    expect(screen.getByText("3 / 3")).toBeInTheDocument();
+  });
+
+  it("reverses the arrow keys once the book is right-bound", async () => {
+    const { user } = renderViewer();
+
+    await user.click(screen.getByRole("button", { name: "左綴じ" }));
+    await user.keyboard("{ArrowLeft}");
+
+    expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+  });
+
+  it("keeps page 1 alone as the cover when switching to spread mode", async () => {
+    const { user } = renderViewer();
+
+    await user.click(screen.getByRole("button", { name: "単ページ" }));
+
+    expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByText(`2–3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+  });
+
+  it("orders a spread's pages by the binding direction", async () => {
+    const { user } = renderViewer();
+    await user.click(screen.getByRole("button", { name: "単ページ" }));
+
+    const [leftFirst, leftSecond] = firstRenderedPair();
+    expect(leftFirst).toBeLessThan(leftSecond);
+
+    await user.click(screen.getByRole("button", { name: "左綴じ" }));
+
+    const [rightFirst, rightSecond] = firstRenderedPair();
+    expect(rightFirst).toBeGreaterThan(rightSecond);
+  });
+
+  it("zooms with the toolbar and resets to 100%", async () => {
+    const { user } = renderViewer();
+
+    await user.click(screen.getByRole("button", { name: "拡大" }));
+    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "125%" }));
+    expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+  });
+
+  it("zooms with the Cmd/Ctrl keyboard shortcuts", async () => {
+    const { user } = renderViewer();
+
+    await user.keyboard("{Control>}={/Control}");
+    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+
+    await user.keyboard("{Control>}-{/Control}");
+    expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+
+    await user.keyboard("{Control>}={/Control}{Control>}={/Control}");
+    await user.keyboard("{Control>}0{/Control}");
+    expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+  });
+
+  it("re-renders a page after a zoom change instead of reusing the cache", async () => {
+    const { doc, user } = renderViewer();
+    const before = vi.mocked(doc.renderPage).mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "拡大" }));
+
+    expect(vi.mocked(doc.renderPage).mock.calls.length).toBeGreaterThan(before);
+    const lastCall = vi.mocked(doc.renderPage).mock.calls.at(-1);
+    expect(lastCall?.[1].scale).toBe(1.25);
+  });
+
+  it("closes the document from the toolbar", async () => {
+    const { onClose, user } = renderViewer();
+
+    await user.click(screen.getByRole("button", { name: "← ライブラリ" }));
+
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  describe("wheel scrolling", () => {
+    const scrollBy = vi.spyOn(Element.prototype, "scrollBy");
+
+    afterEach(() => scrollBy.mockClear());
+
+    it("scrolls forward on a downward wheel in a left-bound book", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 120, deltaX: 0 });
+
+      expect(scrollBy).toHaveBeenCalledWith({ left: 120, behavior: "auto" });
+    });
+
+    it("still reads forward on a downward wheel once right-bound", async () => {
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "左綴じ" }));
+      scrollBy.mockClear();
+
+      fireEvent.wheel(scroller(), { deltaY: 120, deltaX: 0 });
+
+      // Right-bound spreads are laid out reversed, so reading on means moving
+      // towards a smaller scroll offset.
+      expect(scrollBy).toHaveBeenCalledWith({ left: -120, behavior: "auto" });
+    });
+
+    it("leaves a horizontal wheel to the browser", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 0, deltaX: 120 });
+
+      expect(scrollBy).not.toHaveBeenCalled();
+    });
+
+    it("zooms instead of scrolling when the wheel carries ctrl", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: -100, ctrlKey: true });
+
+      expect(scrollBy).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "100%" })).toBeNull();
+    });
+  });
+
+  it("lets the page indicator recover when a smooth scroll is interrupted", async () => {
+    const { user } = renderViewer();
+
+    // Navigate away; jsdom performs no actual scrolling, so the viewer is still
+    // sitting at offset 0 with a scroll to spread 2 outstanding.
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+    // The user grabs the wheel mid-flight, abandoning that scroll.
+    fireEvent.wheel(scroller(), { deltaY: 10, deltaX: 0 });
+    fireEvent.scroll(scroller());
+    await flushScroll();
+
+    // The indicator must follow the real position rather than stay latched.
+    await waitFor(() => {
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+  });
+});
