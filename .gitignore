@@ -33,3 +33,7 @@ coverage/
 
 # pdf.js runtime assets copied from node_modules at build time
 public/pdfjs/
+
+# Claude Code のセッションローカルな状態
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
