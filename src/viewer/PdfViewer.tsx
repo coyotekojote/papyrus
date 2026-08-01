@@ -83,7 +83,9 @@ function closestPage(node: Node | null): HTMLElement | null {
 }
 
 function copyToClipboard(text: string): void {
-  void navigator.clipboard?.writeText(text).catch(() => {
+  const clipboard = navigator.clipboard as Clipboard | undefined;
+  if (!clipboard) return;
+  void clipboard.writeText(text).catch(() => {
     // Losing a copy is not worth an error dialog.
   });
 }

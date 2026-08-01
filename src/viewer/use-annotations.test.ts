@@ -148,6 +148,41 @@ describe("useAnnotations", () => {
     expect(result.current.error).toBeNull();
   });
 
+  it("keeps saving after a conflict whose reload fails", async () => {
+    vi.mocked(loadAnnotations)
+      .mockResolvedValueOnce({
+        annotations: emptyAnnotations(),
+        modifiedAtMs: 111,
+      })
+      // The rebase reload fails (e.g. the sidecar folder became unreadable)…
+      .mockRejectedValueOnce(new Error("読めません"))
+      // …but recovers by the time the next mutation flushes.
+      .mockResolvedValueOnce({
+        annotations: emptyAnnotations(),
+        modifiedAtMs: 700,
+      });
+    vi.mocked(saveAnnotations)
+      .mockRejectedValueOnce(new SidecarConflictError("annotations.json"))
+      .mockRejectedValueOnce(new SidecarConflictError("annotations.json"))
+      .mockResolvedValueOnce(800);
+
+    const { result } = renderHook(() => useAnnotations(PATH));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => result.current.addHighlight(highlight("first")));
+    await waitFor(() => expect(result.current.error).toBe("読めません"));
+
+    // A rejected flush must not poison the queue: the next mutation still
+    // flushes (and carries the first one with it).
+    act(() => result.current.addHighlight(highlight("second")));
+
+    await waitFor(() => expect(saveAnnotations).toHaveBeenCalledTimes(3));
+    expect(
+      vi.mocked(saveAnnotations).mock.calls[2][1].highlights.map((h) => h.id),
+    ).toEqual(["first", "second"]);
+    expect(vi.mocked(saveAnnotations).mock.calls[2][2]).toBe(700);
+  });
+
   it("gives up with an error when every retry keeps conflicting", async () => {
     vi.mocked(loadAnnotations).mockResolvedValue({
       annotations: emptyAnnotations(),

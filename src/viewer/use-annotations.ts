@@ -114,13 +114,26 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
       } catch (cause) {
         if (cause instanceof SidecarConflictError) {
           // Another writer got there first: rebase the pending mutations onto
-          // whatever is on disk now and try again.
-          const fresh = await loadAnnotations(pdfPath);
-          persistedRef.current = fresh;
-          if (activeRef.current) {
-            setAnnotations(applyPending(fresh.annotations));
+          // whatever is on disk now and try again. A failed reload must not
+          // reject flush() — that would poison flushRef's chain and block
+          // every save after it.
+          try {
+            const fresh = await loadAnnotations(pdfPath);
+            persistedRef.current = fresh;
+            if (activeRef.current) {
+              setAnnotations(applyPending(fresh.annotations));
+            }
+            continue;
+          } catch (reloadCause) {
+            if (activeRef.current) {
+              setError(
+                reloadCause instanceof Error
+                  ? reloadCause.message
+                  : String(reloadCause),
+              );
+            }
+            return;
           }
-          continue;
         }
         if (activeRef.current) {
           setError(cause instanceof Error ? cause.message : String(cause));
