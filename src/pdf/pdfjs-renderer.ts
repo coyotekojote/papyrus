@@ -1,5 +1,6 @@
 import {
   GlobalWorkerOptions,
+  TextLayer,
   getDocument,
   type PDFDocumentLoadingTask,
   type PDFDocumentProxy,
@@ -19,6 +20,7 @@ import {
   type PdfDocumentHandle,
   type PdfRenderer,
   type RenderPageOptions,
+  type RenderTextLayerOptions,
 } from "./types";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -99,6 +101,34 @@ class PdfJsDocument implements PdfDocumentHandle {
     signal?.addEventListener("abort", onAbort, { once: true });
     try {
       await task.promise;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  async renderTextLayer(
+    pageNumber: number,
+    { scale, container, signal }: RenderTextLayerOptions,
+  ): Promise<void> {
+    const page = await this.page(pageNumber);
+    if (signal?.aborted || this.destroyed) return;
+
+    // The layer positions spans in page-percentages and sizes the font off the
+    // `--total-scale-factor` CSS variable, which the page element provides.
+    container.replaceChildren();
+    const layer = new TextLayer({
+      textContentSource: page.streamTextContent(),
+      container,
+      viewport: page.getViewport({ scale }),
+    });
+    const onAbort = () => layer.cancel();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      await layer.render();
+    } catch (cause) {
+      // Cancelling rejects with pdf.js's AbortException; that is not a failure.
+      if (signal?.aborted) return;
+      throw cause;
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }

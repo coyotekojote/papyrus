@@ -6,9 +6,29 @@ import {
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  emptyAnnotations,
+  loadAnnotations,
+  loadNotes,
+  saveAnnotations,
+  saveNotes,
+  type Annotations,
+  type Highlight,
+} from "../files/sidecar";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { PdfViewer } from "./PdfViewer";
+
+vi.mock("../files/sidecar", async (importActual) => {
+  const actual = await importActual<typeof import("../files/sidecar")>();
+  return {
+    ...actual,
+    loadAnnotations: vi.fn(),
+    saveAnnotations: vi.fn(),
+    loadNotes: vi.fn(),
+    saveNotes: vi.fn(),
+  };
+});
 
 const PAGE_COUNT = 8;
 
@@ -20,10 +40,48 @@ function fakeDoc(
     pageCount,
     getPageSize: vi.fn(async () => ({ width: 100, height: 140 })),
     renderPage: vi.fn(async () => {}),
+    renderTextLayer: vi.fn(async () => {}),
     getOutline: vi.fn(async () => outline),
     destroy: vi.fn(async () => {}),
   };
 }
+
+function fakeHighlight(overrides: Partial<Highlight> = {}): Highlight {
+  return {
+    id: "h1",
+    page: 3,
+    rects: [{ x: 0.1, y: 0.2, w: 0.5, h: 0.02 }],
+    color: "yellow",
+    text: "抜き出した本文",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function mockSidecar(annotations: Annotations = emptyAnnotations()) {
+  vi.mocked(loadAnnotations).mockResolvedValue({
+    annotations,
+    modifiedAtMs: 1,
+  });
+  vi.mocked(saveAnnotations).mockResolvedValue(2);
+  vi.mocked(loadNotes).mockResolvedValue({ content: "", modifiedAtMs: null });
+  vi.mocked(saveNotes).mockResolvedValue(3);
+}
+
+beforeEach(() => {
+  vi.mocked(loadAnnotations).mockReset();
+  vi.mocked(saveAnnotations).mockReset();
+  vi.mocked(loadNotes).mockReset();
+  vi.mocked(saveNotes).mockReset();
+  mockSidecar();
+});
+
+afterEach(() => {
+  // Some tests stub the Range geometry jsdom does not implement; it must not
+  // leak into the next one.
+  delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+  window.getSelection()?.removeAllRanges();
+});
 
 function pageSizes(pageCount = PAGE_COUNT): PageSize[] {
   return Array.from({ length: pageCount }, () => ({ width: 100, height: 140 }));
@@ -54,6 +112,34 @@ function scroller(): HTMLElement {
   return element as HTMLElement;
 }
 
+/**
+ * A press and release at the given viewport coordinates. Built as MouseEvents
+ * because jsdom has no PointerEvent, and fireEvent.pointerUp would then drop
+ * the coordinates the hit-test reads.
+ */
+function pointerGesture(
+  target: HTMLElement,
+  down: { x: number; y: number },
+  up: { x: number; y: number },
+) {
+  fireEvent(
+    target,
+    new MouseEvent("pointerdown", {
+      bubbles: true,
+      clientX: down.x,
+      clientY: down.y,
+    }),
+  );
+  fireEvent(
+    target,
+    new MouseEvent("pointerup", {
+      bubbles: true,
+      clientX: up.x,
+      clientY: up.y,
+    }),
+  );
+}
+
 /** Lets the rAF-throttled scroll handler run. */
 async function flushScroll() {
   await act(async () => {
@@ -68,6 +154,7 @@ function renderViewer(pageCount = PAGE_COUNT, outline: OutlineNode[] = []) {
     <PdfViewer
       doc={doc}
       pageSizes={pageSizes(pageCount)}
+      filePath="/papers/paper.pdf"
       fileName="paper.pdf"
       onClose={onClose}
     />,
@@ -415,6 +502,429 @@ describe("PdfViewer", () => {
         document.querySelectorAll(".thumbnail .page:not(.page--placeholder)")
           .length,
       ).toBeLessThanOrEqual(8);
+    });
+  });
+
+  describe("highlights", () => {
+    async function openPanel(annotations?: Annotations) {
+      if (annotations) mockSidecar(annotations);
+      const viewer = renderViewer();
+      await viewer.user.click(
+        screen.getByRole("button", { name: "ハイライト" }),
+      );
+      return viewer;
+    }
+
+    it("loads the sidecar annotations for the opened file", async () => {
+      renderViewer();
+
+      await waitFor(() =>
+        expect(loadAnnotations).toHaveBeenCalledWith("/papers/paper.pdf"),
+      );
+    });
+
+    it("mounts a selectable text layer on rendered pages", async () => {
+      const { doc } = renderViewer();
+
+      await waitFor(() => expect(doc.renderTextLayer).toHaveBeenCalled());
+      expect(document.querySelector(".textLayer")).not.toBeNull();
+    });
+
+    it("lists saved highlights in reading order with page numbers", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [
+          fakeHighlight({ id: "later", page: 5, text: "後のほう" }),
+          fakeHighlight({ id: "earlier", page: 2, text: "先のほう" }),
+        ],
+      });
+
+      const items = await screen.findAllByRole("listitem");
+      expect(items[0]).toHaveTextContent("先のほう");
+      expect(items[0]).toHaveTextContent("p.2");
+      expect(items[1]).toHaveTextContent("後のほう");
+    });
+
+    it("shows an empty-state hint when there are no highlights", async () => {
+      await openPanel();
+
+      expect(
+        await screen.findByText(/テキストを選択して色を選ぶ/),
+      ).toBeInTheDocument();
+    });
+
+    it("draws highlight rects over the pages that carry them", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+
+      await waitFor(() =>
+        expect(document.querySelectorAll(".page__highlight")).toHaveLength(1),
+      );
+    });
+
+    it("jumps to the highlight's page from the list", async () => {
+      const { user } = await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 5, text: "後のほう" })],
+      });
+
+      await user.click(await screen.findByRole("button", { name: /後のほう/ }));
+
+      expect(screen.getByText(`5 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("deletes a highlight and persists the removal", async () => {
+      const { user } = await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight()],
+      });
+      await screen.findAllByRole("listitem");
+
+      await user.click(screen.getByRole("button", { name: "削除" }));
+
+      expect(screen.queryByRole("listitem")).toBeNull();
+      await waitFor(() => expect(saveAnnotations).toHaveBeenCalled());
+      expect(
+        vi.mocked(saveAnnotations).mock.calls[0][1].highlights,
+      ).toHaveLength(0);
+    });
+
+    it("copies the extracted text to the clipboard", async () => {
+      // userEvent.setup() installs a working clipboard stub in jsdom.
+      const { user } = await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ text: "コピーされる本文" })],
+      });
+      await screen.findAllByRole("listitem");
+
+      await user.click(screen.getByRole("button", { name: "コピー" }));
+
+      expect(await navigator.clipboard.readText()).toBe("コピーされる本文");
+    });
+
+    it("appends the highlight to notes.md as a quote", async () => {
+      const { user } = await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 3, text: "引用する本文" })],
+      });
+      vi.mocked(loadNotes).mockResolvedValue({
+        content: "# 既存メモ",
+        modifiedAtMs: 7,
+      });
+      await screen.findAllByRole("listitem");
+
+      await user.click(screen.getByRole("button", { name: "メモに挿入" }));
+
+      await waitFor(() =>
+        expect(saveNotes).toHaveBeenCalledWith(
+          "/papers/paper.pdf",
+          "# 既存メモ\n\n> 引用する本文\n>\n> — p.3\n",
+          7,
+        ),
+      );
+    });
+
+    it("stops claiming to be loading once the load has failed", async () => {
+      vi.mocked(loadAnnotations).mockRejectedValue(new Error("読めません"));
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+
+      expect(await screen.findByText("読めません")).toBeInTheDocument();
+      expect(screen.queryByText("読み込み中…")).toBeNull();
+    });
+
+    it("still hit-tests a click when the selection lies outside the page", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1, text: "選択済みの本文" })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // Text selected in the panel (outside any page) must not swallow the
+      // click that follows on the page itself.
+      const panelText = await screen.findByText("選択済みの本文");
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(panelText);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      // Inside the highlight's rect (x .1–.6, y .2–.22 of a 100x140 page).
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+    });
+
+    it("still hit-tests a click when the selection holds nothing to extract", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // A selection on the page itself, but one that extracts to nothing —
+      // there is no highlight to create, so this stays a plain click.
+      const blank = document.createElement("span");
+      blank.textContent = "   ";
+      page.append(blank);
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(blank);
+      // jsdom implements no Range.getClientRects; a real browser would return
+      // the (zero-area) rects of this whitespace run.
+      Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+    });
+
+    it("treats a drag across a highlight as a pan, not a click on it", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // Released inside the highlight, but 60px from where the finger landed.
+      pointerGesture(page, { x: 80, y: 30 }, { x: 20, y: 30 });
+
+      expect(
+        screen.queryByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeNull();
+    });
+
+    it("saves only the part of a selection that lies on the page", async () => {
+      const { user } = await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 5, text: "パネルの本文" })],
+      });
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      // Real selections live in the text layer; the page-number label sits
+      // after it and must stay out of the extract.
+      const textLayer = page.querySelector(".textLayer");
+      if (!textLayer) throw new Error("page 1 has no text layer");
+      const onPage = document.createElement("span");
+      onPage.textContent = "ページ上の本文";
+      textLayer.append(onPage);
+      expect(page.querySelector(".page__label")?.textContent).toBe("1");
+
+      // jsdom lays nothing out; every range reports the same single rect.
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      // Dragged from the page into the highlights panel: the release carries a
+      // selection whose text runs well past the page it started on.
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.setStart(onPage.firstChild as Node, 0);
+      range.setEnd(
+        (await screen.findByText("パネルの本文")).firstChild as Node,
+        6,
+      );
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      expect(range.toString()).toContain("パネルの本文");
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(
+        screen.getByRole("button", { name: "黄色でハイライト" }),
+      );
+
+      await waitFor(() => expect(saveAnnotations).toHaveBeenCalled());
+      const saved = vi
+        .mocked(saveAnnotations)
+        .mock.calls.at(-1)?.[1].highlights;
+      expect(saved?.at(-1)?.text).toBe("ページ上の本文");
+    });
+
+    it("keeps the page-number label out of the extracted text", async () => {
+      const { user } = await openPanel();
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const textLayer = page.querySelector(".textLayer");
+      const label = page.querySelector(".page__label");
+      if (!textLayer || !label) throw new Error("page 1 is missing its parts");
+      const onPage = document.createElement("span");
+      onPage.textContent = "本文の終わり";
+      textLayer.append(onPage);
+
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      // Dragged past the end of the text and onto the page number, which is
+      // part of the viewer's chrome rather than of the document.
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.setStart(onPage.firstChild as Node, 0);
+      range.setEnd(label.firstChild as Node, 1);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      expect(range.toString()).toBe("本文の終わり1");
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(
+        screen.getByRole("button", { name: "黄色でハイライト" }),
+      );
+
+      await waitFor(() => expect(saveAnnotations).toHaveBeenCalled());
+      const saved = vi
+        .mocked(saveAnnotations)
+        .mock.calls.at(-1)?.[1].highlights;
+      expect(saved?.at(-1)?.text).toBe("本文の終わり");
+    });
+
+    it("refuses to create a highlight before the annotations have loaded", async () => {
+      vi.mocked(loadAnnotations).mockReturnValue(new Promise(() => {}));
+      const { user } = renderViewer();
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const textLayer = page.querySelector(".textLayer");
+      if (!textLayer) throw new Error("page 1 has no text layer");
+      const text = document.createElement("span");
+      text.textContent = "まだ保存できない本文";
+      textLayer.append(text);
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(
+        screen.getByRole("button", { name: "黄色でハイライト" }),
+      );
+
+      expect(
+        await screen.findByText(/注釈をまだ読み込めていない/),
+      ).toBeInTheDocument();
+      expect(saveAnnotations).not.toHaveBeenCalled();
+    });
+
+    it("does not mistake a selection inside a thumbnail for a page selection", async () => {
+      mockSidecar({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+      // No bookmarks, so the sidebar falls back to thumbnails — which are
+      // PageCanvases carrying `data-page` just like the pages in the scroller.
+      await user.click(screen.getByRole("button", { name: "目次" }));
+      await screen.findByRole("button", { name: "2ページ" });
+      const thumbnailPage = document.querySelector<HTMLElement>(
+        ".thumbnails .page[data-page]",
+      );
+      if (!thumbnailPage) throw new Error("no thumbnail page is rendered");
+      // jsdom lays nothing out; without a real box the selection would produce
+      // no rects at all and the mix-up could not show itself.
+      thumbnailPage.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 60, height: 84 }) as DOMRect;
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(thumbnailPage);
+      Range.prototype.getClientRects = () =>
+        [{ left: 0, top: 0, width: 40, height: 10 }] as unknown as DOMRectList;
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+
+      // The click hit-tests the page instead of offering to highlight a
+      // selection whose coordinates belong to a thumbnail.
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("toolbar", { name: "ハイライトを作成" }),
+      ).toBeNull();
+    });
+
+    it("forgets a gesture that was released away from the pages", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // A drag that starts on the page and ends somewhere else entirely: the
+      // scroller never sees the release.
+      fireEvent(
+        page,
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: 400,
+          clientY: 400,
+        }),
+      );
+      fireEvent(window, new MouseEvent("pointerup", { clientX: 900 }));
+
+      // The next click is its own gesture and must not be measured against
+      // where that abandoned drag began.
+      fireEvent(
+        page,
+        new MouseEvent("pointerup", {
+          bubbles: true,
+          clientX: 20,
+          clientY: 30,
+        }),
+      );
+
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+    });
+
+    it("closes the panel on a second press", async () => {
+      const { user } = await openPanel();
+      await screen.findByText(/テキストを選択して色を選ぶ/);
+
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+
+      expect(screen.queryByText(/テキストを選択して色を選ぶ/)).toBeNull();
     });
   });
 });

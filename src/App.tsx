@@ -126,6 +126,7 @@ function App() {
         key={openDocument.path}
         doc={openDocument.doc}
         pageSizes={openDocument.pageSizes}
+        filePath={openDocument.path}
         fileName={openDocument.name}
         onClose={handleClose}
       />

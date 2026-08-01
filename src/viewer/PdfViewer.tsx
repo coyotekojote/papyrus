@@ -1,8 +1,28 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import type { Highlight, NormalizedRect } from "../files/sidecar";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
+import { HighlightsPanel } from "./HighlightsPanel";
 import { OutlineSidebar } from "./OutlineSidebar";
 import { PageCanvas } from "./PageCanvas";
+import {
+  CreateHighlightPopup,
+  HighlightActionsPopup,
+  type PopupPosition,
+} from "./SelectionPopup";
 import { ThumbnailList } from "./ThumbnailList";
+import {
+  highlightAtPoint,
+  makeHighlight,
+  normalizeSelectionRects,
+} from "./highlights";
+import { appendHighlightToNotes, useAnnotations } from "./use-annotations";
 import {
   PAGE_GAP,
   SPREAD_PADDING,
@@ -43,16 +63,51 @@ import {
 /** Spreads rendered on each side of the visible one. */
 const OVERSCAN = 1;
 
+/**
+ * How far the pointer may travel between press and release and still count as
+ * a click. Anything further is a drag — a touch pan, most often — and must not
+ * pop up the actions for whatever highlight it happens to end on.
+ */
+const CLICK_SLOP_PX = 6;
+
 export interface PdfViewerProps {
   doc: PdfDocumentHandle;
   pageSizes: readonly PageSize[];
+  /** Path of the PDF on disk; annotations live in its sidecar folder. */
+  filePath: string;
   fileName: string;
   onClose: () => void;
+}
+
+type Popup =
+  | {
+      kind: "create";
+      page: number;
+      rects: NormalizedRect[];
+      text: string;
+      position: PopupPosition;
+    }
+  | { kind: "actions"; highlight: Highlight; position: PopupPosition };
+
+/** The page element (carrying `data-page`) around a DOM node, if any. */
+function closestPage(node: Node | null): HTMLElement | null {
+  const element =
+    node instanceof Element ? node : (node?.parentElement ?? null);
+  return element?.closest<HTMLElement>(".page[data-page]") ?? null;
+}
+
+function copyToClipboard(text: string): void {
+  const clipboard = navigator.clipboard as Clipboard | undefined;
+  if (!clipboard) return;
+  void clipboard.writeText(text).catch(() => {
+    // Losing a copy is not worth an error dialog.
+  });
 }
 
 export function PdfViewer({
   doc,
   pageSizes,
+  filePath,
   fileName,
   onClose,
 }: PdfViewerProps) {
@@ -63,10 +118,30 @@ export function PdfViewer({
   const [viewportWidth, setViewportWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
+  const [popup, setPopup] = useState<Popup | null>(null);
+  /** Why the reader's last highlight action did not happen, if it did not. */
+  const [actionError, setActionError] = useState<string | null>(null);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
 
+  const annotations = useAnnotations(filePath);
+  const highlightsByPage = useMemo(() => {
+    const byPage = new Map<number, Highlight[]>();
+    for (const highlight of annotations.annotations.highlights) {
+      const list = byPage.get(highlight.page);
+      if (list) list.push(highlight);
+      else byPage.set(highlight.page, [highlight]);
+    }
+    return byPage;
+  }, [annotations.annotations.highlights]);
+
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  /** Where the current gesture started, for telling a click from a drag. */
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  /** False once unmounted, so late async results skip their state updates. */
+  const mountedRef = useRef(true);
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -131,6 +206,13 @@ export function PdfViewer({
   // Free rendered canvases when the document is closed.
   useEffect(() => () => cache.clear(), [cache]);
 
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+
   const goToSpread = useCallback(
     (index: number, behavior: ScrollBehavior = "smooth") => {
       if (total === 0) return;
@@ -178,6 +260,9 @@ export function PdfViewer({
 
       const left = scroller.scrollLeft;
       setScrollLeft(left);
+      // The popup is anchored to viewport coordinates; scrolling moves the
+      // page out from under it.
+      setPopup(null);
 
       const nearest = nearestItemIndex(layout, left, viewportWidth);
       if (pendingDomIndexRef.current !== null) {
@@ -271,16 +356,167 @@ export function PdfViewer({
         cancelPendingScroll();
       }
     };
-    // Any direct grab of the scroller also abandons an in-flight smooth scroll.
-    const onPointerDown = () => cancelPendingScroll();
+    // Any direct grab of the scroller also abandons an in-flight smooth scroll
+    // and dismisses a floating popup, whose anchor is about to go stale.
+    const onPointerDown = (event: PointerEvent) => {
+      pointerDownRef.current = { x: event.clientX, y: event.clientY };
+      cancelPendingScroll();
+      setPopup(null);
+    };
+
+    /**
+     * A gesture that ends anywhere else — released over the sidebar, or off
+     * the window entirely — never reaches the scroller's own pointerup. Left
+     * behind, its start would be measured against the next release and turn a
+     * genuine click into a "drag". These fire after React's handler has run.
+     */
+    const forgetPointerDown = () => {
+      pointerDownRef.current = null;
+    };
 
     scroller.addEventListener("wheel", onWheel, { passive: false });
     scroller.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", forgetPointerDown);
+    window.addEventListener("pointercancel", forgetPointerDown);
     return () => {
       scroller.removeEventListener("wheel", onWheel);
       scroller.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", forgetPointerDown);
+      window.removeEventListener("pointercancel", forgetPointerDown);
     };
   }, [cancelPendingScroll]);
+
+  /**
+   * A finished pointer gesture either carries a text selection (offer to
+   * highlight it) or is a plain click (hit-test the existing highlights).
+   * Both popups anchor to the pointer, positioned inside `.viewer__body`.
+   */
+  const handlePointerUp = useCallback(
+    (event: ReactPointerEvent) => {
+      const start = pointerDownRef.current;
+      pointerDownRef.current = null;
+      const bodyRect = bodyRef.current?.getBoundingClientRect();
+      if (!bodyRect) return;
+      const position: PopupPosition = {
+        left: event.clientX - bodyRect.left,
+        top: event.clientY - bodyRect.top + 12,
+      };
+
+      const selection = window.getSelection();
+      const range =
+        selection && !selection.isCollapsed && selection.rangeCount > 0
+          ? selection.getRangeAt(0)
+          : null;
+      // Thumbnails are pages too (same PageCanvas, same `data-page`), so a
+      // selection has to be inside the scroller to be one of *these* pages —
+      // otherwise its rects would be normalized against a thumbnail's box.
+      const selectedInScroller = range
+        ? closestPage(range.startContainer)
+        : null;
+      const selectedPage =
+        selectedInScroller && scrollerRef.current?.contains(selectedInScroller)
+          ? selectedInScroller
+          : null;
+      // Anything that does not yield a highlightable selection — no selection,
+      // one made outside the pages (in the highlights panel, say), or one with
+      // nothing to extract — leaves this a plain click, handled below.
+      if (range && selectedPage) {
+        // A selection running past the page it started on — onto the next one,
+        // or off into a panel — is cut back to that page. Text and geometry
+        // are taken from the same cut, so the extract always says exactly what
+        // the highlight covers.
+        // Only the text layer holds the document's own text; the page also
+        // carries the page-number label, which must never be extracted.
+        const textLayer = selectedPage.querySelector(".textLayer");
+        const onPage = range.cloneRange();
+        if (textLayer && !textLayer.contains(range.endContainer)) {
+          onPage.setEnd(textLayer, textLayer.childNodes.length);
+        }
+        const text = onPage.toString().trim();
+        const rects = normalizeSelectionRects(
+          Array.from(onPage.getClientRects()),
+          selectedPage.getBoundingClientRect(),
+        );
+        if (text !== "" && rects.length > 0) {
+          setPopup({
+            kind: "create",
+            page: Number(selectedPage.dataset.page),
+            rects,
+            text,
+            position,
+          });
+          return;
+        }
+      }
+
+      // A pan (a touch scroll, most often) ends on whatever page it drifted
+      // onto. Releasing there is not a click on the highlight underneath.
+      const travel = start
+        ? Math.hypot(event.clientX - start.x, event.clientY - start.y)
+        : 0;
+      if (travel > CLICK_SLOP_PX) return;
+
+      const pageElement = closestPage(
+        event.target instanceof Node ? event.target : null,
+      );
+      if (!pageElement) return;
+      const pageRect = pageElement.getBoundingClientRect();
+      if (pageRect.width <= 0 || pageRect.height <= 0) return;
+      const hit = highlightAtPoint(
+        annotations.annotations.highlights,
+        Number(pageElement.dataset.page),
+        {
+          x: (event.clientX - pageRect.left) / pageRect.width,
+          y: (event.clientY - pageRect.top) / pageRect.height,
+        },
+      );
+      if (hit) setPopup({ kind: "actions", highlight: hit, position });
+    },
+    [annotations.annotations.highlights],
+  );
+
+  const createHighlight = useCallback(
+    (colorId: string) => {
+      if (popup?.kind !== "create") return;
+      // The hook drops mutations until the sidecar has loaded, so without this
+      // the popup would close as if the highlight had been saved.
+      if (!annotations.loaded) {
+        setActionError(
+          "注釈をまだ読み込めていないため、ハイライトを保存できません",
+        );
+        setHighlightsOpen(true);
+        setPopup(null);
+        return;
+      }
+      setActionError(null);
+      annotations.addHighlight(
+        makeHighlight({
+          page: popup.page,
+          rects: popup.rects,
+          color: colorId,
+          text: popup.text,
+          createdAt: new Date(),
+        }),
+      );
+      window.getSelection()?.removeAllRanges();
+      setPopup(null);
+    },
+    [annotations, popup],
+  );
+
+  const insertToNotes = useCallback(
+    (highlight: Highlight) => {
+      setActionError(null);
+      appendHighlightToNotes(filePath, highlight).catch((cause: unknown) => {
+        // The write outlives the viewer if the reader closes the document
+        // while it is in flight; there is then nobody left to tell.
+        if (!mountedRef.current) return;
+        setActionError(cause instanceof Error ? cause.message : String(cause));
+        setHighlightsOpen(true);
+      });
+    },
+    [filePath],
+  );
 
   const currentSpread = spreads[spreadIndex] ?? [];
   const pageLabel =
@@ -301,6 +537,14 @@ export function PdfViewer({
           onClick={() => setSidebarOpen((open) => !open)}
         >
           目次
+        </button>
+        <button
+          type="button"
+          className="toolbar__button"
+          aria-pressed={highlightsOpen}
+          onClick={() => setHighlightsOpen((open) => !open)}
+        >
+          ハイライト
         </button>
         <span className="toolbar__title" title={fileName}>
           {fileName}
@@ -378,7 +622,7 @@ export function PdfViewer({
         </div>
       </header>
 
-      <div className="viewer__body">
+      <div className="viewer__body" ref={bodyRef}>
         {sidebarOpen ? (
           <aside
             className="sidebar"
@@ -416,6 +660,7 @@ export function PdfViewer({
           className="scroller"
           ref={scrollerRef}
           onScroll={handleScroll}
+          onPointerUp={handlePointerUp}
           tabIndex={0}
           role="region"
           aria-label="PDFページ"
@@ -444,6 +689,8 @@ export function PdfViewer({
                         scale={zoom}
                         width={size.width}
                         height={size.height}
+                        highlights={highlightsByPage.get(pageNumber)}
+                        withTextLayer
                       />
                     );
                   })
@@ -467,6 +714,67 @@ export function PdfViewer({
             );
           })}
         </div>
+
+        {highlightsOpen ? (
+          <aside
+            className="sidebar sidebar--right"
+            aria-label="ハイライト"
+            // Same as the outline sidebar: keep arrow keys away from the
+            // window-level page-turn shortcut while the panel has focus.
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.stopPropagation();
+              }
+            }}
+          >
+            {(annotations.error ?? actionError) ? (
+              <p className="sidebar__status sidebar__status--error">
+                {annotations.error ?? actionError}
+              </p>
+            ) : null}
+            {annotations.loaded ? (
+              <HighlightsPanel
+                highlights={annotations.annotations.highlights}
+                onJumpToPage={goToPage}
+                onCopy={(highlight) => copyToClipboard(highlight.text)}
+                onInsertToNotes={insertToNotes}
+                onDelete={(highlight) =>
+                  annotations.removeHighlight(highlight.id)
+                }
+              />
+            ) : annotations.error ? null : (
+              // Only while the load is genuinely in flight: a failed load is
+              // already reported above and is never going to finish.
+              <p className="sidebar__status">読み込み中…</p>
+            )}
+          </aside>
+        ) : null}
+
+        {popup?.kind === "create" ? (
+          <CreateHighlightPopup
+            position={popup.position}
+            onPick={createHighlight}
+            onDismiss={() => setPopup(null)}
+          />
+        ) : null}
+        {popup?.kind === "actions" ? (
+          <HighlightActionsPopup
+            position={popup.position}
+            onCopy={() => {
+              copyToClipboard(popup.highlight.text);
+              setPopup(null);
+            }}
+            onInsertToNotes={() => {
+              insertToNotes(popup.highlight);
+              setPopup(null);
+            }}
+            onDelete={() => {
+              annotations.removeHighlight(popup.highlight.id);
+              setPopup(null);
+            }}
+            onDismiss={() => setPopup(null)}
+          />
+        ) : null}
       </div>
     </div>
   );

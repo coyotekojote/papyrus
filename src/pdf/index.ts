@@ -4,6 +4,7 @@ export type {
   PdfDocumentHandle,
   PdfRenderer,
   RenderPageOptions,
+  RenderTextLayerOptions,
 } from "./types";
 export { PdfPageOutOfRangeError } from "./types";
 export { FALLBACK_PAGE_SIZE, loadPageSizes } from "./page-sizes";

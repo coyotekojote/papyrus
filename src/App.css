@@ -201,6 +201,8 @@ body {
   flex: 1 1 auto;
   display: flex;
   min-height: 0;
+  /* Anchor for the floating highlight popups. */
+  position: relative;
 }
 
 .scroller {
@@ -274,6 +276,224 @@ body {
   color: #b00;
   font-size: 0.8rem;
   text-align: center;
+}
+
+/* ---------- text layer (adapted from pdf.js's pdf_viewer.css) ---------- */
+
+.textLayer {
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+
+  color-scheme: only light;
+  position: absolute;
+  inset: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 2;
+}
+
+.textLayer :is(span, br) {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+
+  --font-height: 0;
+
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+
+  --scale-x: 1;
+  --rotate: 0deg;
+
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x))
+    scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent {
+  display: contents;
+}
+
+.textLayer ::selection {
+  background: rgb(76 141 255 / 40%);
+  color: transparent;
+}
+
+/* ---------- highlights ---------- */
+
+.page__highlights {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  /* Purely visual: clicks are hit-tested from pointer coordinates instead,
+     so the layer never steals selection from the text layer above it. */
+  pointer-events: none;
+}
+
+.page__highlight {
+  position: absolute;
+  mix-blend-mode: multiply;
+  opacity: 0.55;
+  border-radius: 2px;
+}
+
+.popup {
+  position: absolute;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 45%);
+  transform: translateX(-50%);
+}
+
+.popup__swatch {
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 1px solid rgb(0 0 0 / 35%);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.popup__swatch:hover {
+  outline: 2px solid var(--accent);
+}
+
+.popup__action {
+  padding: 0.3rem 0.6rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.popup__action:hover {
+  background: rgb(255 255 255 / 8%);
+}
+
+.popup__action--danger {
+  color: #ff8080;
+}
+
+.highlights {
+  flex: 1 1 auto;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.highlights__item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.highlights__jump {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  padding: 0.5rem 0.55rem;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.highlights__jump:hover {
+  background: rgb(255 255 255 / 5%);
+}
+
+.highlights__chip {
+  flex: 0 0 auto;
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-top: 0.15rem;
+  border-radius: 3px;
+}
+
+.highlights__text {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.highlights__page {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.highlights__actions {
+  display: flex;
+  border-top: 1px solid var(--border);
+}
+
+.highlights__action {
+  flex: 1;
+  padding: 0.3rem 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.highlights__action:hover {
+  background: rgb(255 255 255 / 6%);
+  color: var(--text);
+}
+
+.highlights__action--danger:hover {
+  color: #ff8080;
+}
+
+.sidebar--right {
+  border-right: none;
+  border-left: 1px solid var(--border);
+}
+
+.sidebar__status--error {
+  color: #ff8080;
 }
 
 /* ---------- table of contents sidebar ---------- */
