@@ -1,0 +1,65 @@
+import { FALLBACK_PAGE_SIZE, type PageSize } from "../pdf";
+import type { Spread } from "./spreads";
+
+/** Horizontal gap between the two pages of a spread, in CSS pixels. */
+export const PAGE_GAP = 8;
+/** Breathing room on each side of a spread, in CSS pixels. */
+export const SPREAD_PADDING = 24;
+
+/** Natural size of a page, or the fallback when its size is not known yet. */
+export function pageSizeAt(
+  pageSizes: readonly PageSize[],
+  pageNumber: number,
+): PageSize {
+  return pageSizes[pageNumber - 1] ?? FALLBACK_PAGE_SIZE;
+}
+
+/** On-screen size of a page at the given zoom. */
+export function pageDisplaySize(size: PageSize, zoom: number): PageSize {
+  return {
+    width: Math.max(1, Math.round(size.width * zoom)),
+    height: Math.max(1, Math.round(size.height * zoom)),
+  };
+}
+
+/** Combined width of a spread's pages plus the gap between them. */
+export function spreadContentWidth(
+  spread: Spread,
+  pageSizes: readonly PageSize[],
+  zoom: number,
+  gap = PAGE_GAP,
+): number {
+  if (spread.length === 0) return 0;
+  const pagesWidth = spread.reduce(
+    (total, page) =>
+      total + pageDisplaySize(pageSizeAt(pageSizes, page), zoom).width,
+    0,
+  );
+  return pagesWidth + gap * (spread.length - 1);
+}
+
+/**
+ * Width of a spread's scroll-snap box. A spread is always at least as wide as
+ * the viewport so exactly one spread fills the screen and snapping lands on it.
+ */
+export function spreadBoxWidth(
+  contentWidth: number,
+  viewportWidth: number,
+  padding = SPREAD_PADDING,
+): number {
+  return Math.max(viewportWidth, contentWidth + padding * 2);
+}
+
+/** Tallest page in a spread, at the given zoom. */
+export function spreadContentHeight(
+  spread: Spread,
+  pageSizes: readonly PageSize[],
+  zoom: number,
+): number {
+  if (spread.length === 0) return 0;
+  return Math.max(
+    ...spread.map(
+      (page) => pageDisplaySize(pageSizeAt(pageSizes, page), zoom).height,
+    ),
+  );
+}

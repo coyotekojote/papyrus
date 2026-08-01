@@ -30,3 +30,6 @@ pnpm-debug.log*
 
 # Coverage
 coverage/
+
+# pdf.js runtime assets copied from node_modules at build time
+public/pdfjs/
