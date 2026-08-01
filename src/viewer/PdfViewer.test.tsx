@@ -76,6 +76,13 @@ beforeEach(() => {
   mockSidecar();
 });
 
+afterEach(() => {
+  // Some tests stub the Range geometry jsdom does not implement; it must not
+  // leak into the next one.
+  delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+  window.getSelection()?.removeAllRanges();
+});
+
 function pageSizes(pageCount = PAGE_COUNT): PageSize[] {
   return Array.from({ length: pageCount }, () => ({ width: 100, height: 140 }));
 }
@@ -675,7 +682,7 @@ describe("PdfViewer", () => {
       range.selectNodeContents(blank);
       // jsdom implements no Range.getClientRects; a real browser would return
       // the (zero-area) rects of this whitespace run.
-      range.getClientRects = () => [] as unknown as DOMRectList;
+      Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
       selection?.removeAllRanges();
       selection?.addRange(range);
 
@@ -702,6 +709,82 @@ describe("PdfViewer", () => {
       expect(
         screen.queryByRole("toolbar", { name: "ハイライト操作" }),
       ).toBeNull();
+    });
+
+    it("saves only the part of a selection that lies on the page", async () => {
+      const { user } = await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 5, text: "パネルの本文" })],
+      });
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const onPage = document.createElement("span");
+      onPage.textContent = "ページ上の本文";
+      page.append(onPage);
+
+      // jsdom lays nothing out; every range reports the same single rect.
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      // Dragged from the page into the highlights panel: the release carries a
+      // selection whose text runs well past the page it started on.
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.setStart(onPage.firstChild as Node, 0);
+      range.setEnd(
+        (await screen.findByText("パネルの本文")).firstChild as Node,
+        6,
+      );
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      expect(range.toString()).toContain("パネルの本文");
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(
+        screen.getByRole("button", { name: "黄色でハイライト" }),
+      );
+
+      await waitFor(() => expect(saveAnnotations).toHaveBeenCalled());
+      const saved = vi
+        .mocked(saveAnnotations)
+        .mock.calls.at(-1)?.[1].highlights;
+      expect(saved?.at(-1)?.text).toBe("ページ上の本文");
+    });
+
+    it("refuses to create a highlight before the annotations have loaded", async () => {
+      vi.mocked(loadAnnotations).mockReturnValue(new Promise(() => {}));
+      const { user } = renderViewer();
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const text = document.createElement("span");
+      text.textContent = "まだ保存できない本文";
+      page.append(text);
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(
+        screen.getByRole("button", { name: "黄色でハイライト" }),
+      );
+
+      expect(
+        await screen.findByText(/注釈をまだ読み込めていない/),
+      ).toBeInTheDocument();
+      expect(saveAnnotations).not.toHaveBeenCalled();
     });
 
     it("does not mistake a selection inside a thumbnail for a page selection", async () => {
@@ -733,7 +816,7 @@ describe("PdfViewer", () => {
       const selection = window.getSelection();
       const range = document.createRange();
       range.selectNodeContents(thumbnailPage);
-      range.getClientRects = () =>
+      Range.prototype.getClientRects = () =>
         [{ left: 0, top: 0, width: 40, height: 10 }] as unknown as DOMRectList;
       selection?.removeAllRanges();
       selection?.addRange(range);

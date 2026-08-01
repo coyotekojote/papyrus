@@ -120,8 +120,8 @@ export function PdfViewer({
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [highlightsOpen, setHighlightsOpen] = useState(false);
   const [popup, setPopup] = useState<Popup | null>(null);
-  /** Failure of the latest copy-to-notes, surfaced in the highlights panel. */
-  const [notesError, setNotesError] = useState<string | null>(null);
+  /** Why the reader's last highlight action did not happen, if it did not. */
+  const [actionError, setActionError] = useState<string | null>(null);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
 
@@ -421,10 +421,17 @@ export function PdfViewer({
       // one made outside the pages (in the highlights panel, say), or one with
       // nothing to extract — leaves this a plain click, handled below.
       if (range && selectedPage) {
-        const text = range.toString().trim();
-        // A selection spanning pages is clipped to the page it started on.
+        // A selection running past the page it started on — onto the next one,
+        // or off into a panel — is cut back to that page. Text and geometry
+        // are taken from the same cut, so the extract always says exactly what
+        // the highlight covers.
+        const onPage = range.cloneRange();
+        if (closestPage(range.endContainer) !== selectedPage) {
+          onPage.setEnd(selectedPage, selectedPage.childNodes.length);
+        }
+        const text = onPage.toString().trim();
         const rects = normalizeSelectionRects(
-          Array.from(range.getClientRects()),
+          Array.from(onPage.getClientRects()),
           selectedPage.getBoundingClientRect(),
         );
         if (text !== "" && rects.length > 0) {
@@ -468,6 +475,17 @@ export function PdfViewer({
   const createHighlight = useCallback(
     (colorId: string) => {
       if (popup?.kind !== "create") return;
+      // The hook drops mutations until the sidecar has loaded, so without this
+      // the popup would close as if the highlight had been saved.
+      if (!annotations.loaded) {
+        setActionError(
+          "注釈をまだ読み込めていないため、ハイライトを保存できません",
+        );
+        setHighlightsOpen(true);
+        setPopup(null);
+        return;
+      }
+      setActionError(null);
       annotations.addHighlight(
         makeHighlight({
           page: popup.page,
@@ -485,12 +503,12 @@ export function PdfViewer({
 
   const insertToNotes = useCallback(
     (highlight: Highlight) => {
-      setNotesError(null);
+      setActionError(null);
       appendHighlightToNotes(filePath, highlight).catch((cause: unknown) => {
         // The write outlives the viewer if the reader closes the document
         // while it is in flight; there is then nobody left to tell.
         if (!mountedRef.current) return;
-        setNotesError(cause instanceof Error ? cause.message : String(cause));
+        setActionError(cause instanceof Error ? cause.message : String(cause));
         setHighlightsOpen(true);
       });
     },
@@ -706,9 +724,9 @@ export function PdfViewer({
               }
             }}
           >
-            {(annotations.error ?? notesError) ? (
+            {(annotations.error ?? actionError) ? (
               <p className="sidebar__status sidebar__status--error">
-                {annotations.error ?? notesError}
+                {annotations.error ?? actionError}
               </p>
             ) : null}
             {annotations.loaded ? (
