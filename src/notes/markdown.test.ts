@@ -83,9 +83,19 @@ describe("parseMarkdown", () => {
     // Four spaces is not a list marker here, so the line is not swallowed.
     const blocks = parseMarkdown("- one\n    - too deep");
     expect(blocks.map((block) => block.kind)).toEqual(["list", "paragraph"]);
+    // Kept verbatim, indentation included.
     expect(
       blocks[1].kind === "paragraph" && inlineText(blocks[1].children),
-    ).toBe("- too deep");
+    ).toBe("    - too deep");
+  });
+
+  it("keeps the indentation of a line it does not otherwise understand", () => {
+    // An indented code block is not supported; dropping its indentation would
+    // silently rewrite the note.
+    const block = only("    const a = 1;");
+    expect(block.kind === "paragraph" && inlineText(block.children)).toBe(
+      "    const a = 1;",
+    );
   });
 
   it("ends a paragraph when a list starts without a blank line", () => {

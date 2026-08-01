@@ -128,7 +128,10 @@ export function parseMarkdown(source: string): Block[] {
       !BLANK.test(lines[index]) &&
       !startsBlock(lines[index])
     ) {
-      paragraph.push(lines[index].trim());
+      // Only the trailing whitespace goes: a line's indentation is the one
+      // thing left of an unsupported construct (an indented code block, say)
+      // once it falls through to a paragraph, so it is kept verbatim.
+      paragraph.push(lines[index].trimEnd());
       index += 1;
     }
     blocks.push({

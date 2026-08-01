@@ -657,6 +657,9 @@ body {
 
 .markdown p {
   margin: 0.6em 0;
+  /* The parser keeps the indentation of lines it does not understand; without
+     this the preview would collapse it away again. */
+  white-space: pre-wrap;
 }
 
 .markdown ul,
