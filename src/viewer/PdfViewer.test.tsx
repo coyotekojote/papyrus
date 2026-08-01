@@ -105,6 +105,34 @@ function scroller(): HTMLElement {
   return element as HTMLElement;
 }
 
+/**
+ * A press and release at the given viewport coordinates. Built as MouseEvents
+ * because jsdom has no PointerEvent, and fireEvent.pointerUp would then drop
+ * the coordinates the hit-test reads.
+ */
+function pointerGesture(
+  target: HTMLElement,
+  down: { x: number; y: number },
+  up: { x: number; y: number },
+) {
+  fireEvent(
+    target,
+    new MouseEvent("pointerdown", {
+      bubbles: true,
+      clientX: down.x,
+      clientY: down.y,
+    }),
+  );
+  fireEvent(
+    target,
+    new MouseEvent("pointerup", {
+      bubbles: true,
+      clientX: up.x,
+      clientY: up.y,
+    }),
+  );
+}
+
 /** Lets the rAF-throttled scroll handler run. */
 async function flushScroll() {
   await act(async () => {
@@ -620,20 +648,29 @@ describe("PdfViewer", () => {
       selection?.addRange(range);
 
       // Inside the highlight's rect (x .1–.6, y .2–.22 of a 100x140 page).
-      // Built as a MouseEvent: jsdom has no PointerEvent, so fireEvent.pointerUp
-      // would drop the coordinates the hit-test needs.
-      fireEvent(
-        page,
-        new MouseEvent("pointerup", {
-          bubbles: true,
-          clientX: 20,
-          clientY: 30,
-        }),
-      );
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
 
       expect(
         screen.getByRole("toolbar", { name: "ハイライト操作" }),
       ).toBeInTheDocument();
+    });
+
+    it("treats a drag across a highlight as a pan, not a click on it", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // Released inside the highlight, but 60px from where the finger landed.
+      pointerGesture(page, { x: 80, y: 30 }, { x: 20, y: 30 });
+
+      expect(
+        screen.queryByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeNull();
     });
 
     it("closes the panel on a second press", async () => {

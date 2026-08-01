@@ -63,6 +63,13 @@ import {
 /** Spreads rendered on each side of the visible one. */
 const OVERSCAN = 1;
 
+/**
+ * How far the pointer may travel between press and release and still count as
+ * a click. Anything further is a drag — a touch pan, most often — and must not
+ * pop up the actions for whatever highlight it happens to end on.
+ */
+const CLICK_SLOP_PX = 6;
+
 export interface PdfViewerProps {
   doc: PdfDocumentHandle;
   pageSizes: readonly PageSize[];
@@ -131,6 +138,8 @@ export function PdfViewer({
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  /** Where the current gesture started, for telling a click from a drag. */
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -340,7 +349,8 @@ export function PdfViewer({
     };
     // Any direct grab of the scroller also abandons an in-flight smooth scroll
     // and dismisses a floating popup, whose anchor is about to go stale.
-    const onPointerDown = () => {
+    const onPointerDown = (event: PointerEvent) => {
+      pointerDownRef.current = { x: event.clientX, y: event.clientY };
       cancelPendingScroll();
       setPopup(null);
     };
@@ -360,6 +370,8 @@ export function PdfViewer({
    */
   const handlePointerUp = useCallback(
     (event: ReactPointerEvent) => {
+      const start = pointerDownRef.current;
+      pointerDownRef.current = null;
       const bodyRect = bodyRef.current?.getBoundingClientRect();
       if (!bodyRect) return;
       const position: PopupPosition = {
@@ -393,6 +405,13 @@ export function PdfViewer({
         }
         return;
       }
+
+      // A pan (a touch scroll, most often) ends on whatever page it drifted
+      // onto. Releasing there is not a click on the highlight underneath.
+      const travel = start
+        ? Math.hypot(event.clientX - start.x, event.clientY - start.y)
+        : 0;
+      if (travel > CLICK_SLOP_PX) return;
 
       const pageElement = closestPage(
         event.target instanceof Node ? event.target : null,
