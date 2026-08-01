@@ -4,13 +4,11 @@ import {
   SidecarConflictError,
   emptyAnnotations,
   loadAnnotations,
-  loadNotes,
   saveAnnotations,
-  saveNotes,
   type Annotations,
   type Highlight,
 } from "../files/sidecar";
-import { appendHighlightToNotes, useAnnotations } from "./use-annotations";
+import { useAnnotations } from "./use-annotations";
 
 vi.mock("../files/sidecar", async (importActual) => {
   const actual = await importActual<typeof import("../files/sidecar")>();
@@ -18,8 +16,6 @@ vi.mock("../files/sidecar", async (importActual) => {
     ...actual,
     loadAnnotations: vi.fn(),
     saveAnnotations: vi.fn(),
-    loadNotes: vi.fn(),
-    saveNotes: vi.fn(),
   };
 });
 
@@ -43,8 +39,6 @@ function withHighlights(...highlights: Highlight[]): Annotations {
 beforeEach(() => {
   vi.mocked(loadAnnotations).mockReset();
   vi.mocked(saveAnnotations).mockReset();
-  vi.mocked(loadNotes).mockReset();
-  vi.mocked(saveNotes).mockReset();
 });
 
 describe("useAnnotations", () => {
@@ -398,52 +392,5 @@ describe("useAnnotations", () => {
       "disk",
     ]);
     expect(saveAnnotations).not.toHaveBeenCalled();
-  });
-});
-
-describe("appendHighlightToNotes", () => {
-  it("appends the quote to the loaded notes", async () => {
-    vi.mocked(loadNotes).mockResolvedValue({
-      content: "# メモ",
-      modifiedAtMs: 10,
-    });
-    vi.mocked(saveNotes).mockResolvedValue(11);
-
-    await appendHighlightToNotes(PATH, highlight("q", 4));
-
-    expect(saveNotes).toHaveBeenCalledWith(
-      PATH,
-      "# メモ\n\n> text-q\n>\n> — p.4\n",
-      10,
-    );
-  });
-
-  it("reloads and retries once when the notes changed meanwhile", async () => {
-    vi.mocked(loadNotes)
-      .mockResolvedValueOnce({ content: "", modifiedAtMs: null })
-      .mockResolvedValueOnce({ content: "他端末の追記", modifiedAtMs: 20 });
-    vi.mocked(saveNotes)
-      .mockRejectedValueOnce(new SidecarConflictError("notes.md"))
-      .mockResolvedValueOnce(21);
-
-    await appendHighlightToNotes(PATH, highlight("q", 2));
-
-    expect(saveNotes).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(saveNotes).mock.calls[1][1]).toBe(
-      "他端末の追記\n\n> text-q\n>\n> — p.2\n",
-    );
-    expect(vi.mocked(saveNotes).mock.calls[1][2]).toBe(20);
-  });
-
-  it("propagates a second conflict instead of looping", async () => {
-    vi.mocked(loadNotes).mockResolvedValue({ content: "", modifiedAtMs: 1 });
-    vi.mocked(saveNotes).mockRejectedValue(
-      new SidecarConflictError("notes.md"),
-    );
-
-    await expect(appendHighlightToNotes(PATH, highlight("q"))).rejects.toThrow(
-      SidecarConflictError,
-    );
-    expect(saveNotes).toHaveBeenCalledTimes(2);
   });
 });

@@ -7,6 +7,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { Highlight, NormalizedRect } from "../files/sidecar";
+import { NotesPanel } from "../notes/NotesPanel";
+import { useNotes } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { HighlightsPanel } from "./HighlightsPanel";
 import { OutlineSidebar } from "./OutlineSidebar";
@@ -22,7 +24,7 @@ import {
   makeHighlight,
   normalizeSelectionRects,
 } from "./highlights";
-import { appendHighlightToNotes, useAnnotations } from "./use-annotations";
+import { useAnnotations } from "./use-annotations";
 import {
   PAGE_GAP,
   SPREAD_PADDING,
@@ -119,13 +121,17 @@ export function PdfViewer({
   const [scrollLeft, setScrollLeft] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [highlightsOpen, setHighlightsOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
   const [popup, setPopup] = useState<Popup | null>(null);
   /** Why the reader's last highlight action did not happen, if it did not. */
   const [actionError, setActionError] = useState<string | null>(null);
+  /** Same, for an insertion the notes panel could not accept. */
+  const [noteError, setNoteError] = useState<string | null>(null);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
 
   const annotations = useAnnotations(filePath);
+  const notes = useNotes(filePath);
   const highlightsByPage = useMemo(() => {
     const byPage = new Map<number, Highlight[]>();
     for (const highlight of annotations.annotations.highlights) {
@@ -140,8 +146,6 @@ export function PdfViewer({
   const bodyRef = useRef<HTMLDivElement>(null);
   /** Where the current gesture started, for telling a click from a drag. */
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
-  /** False once unmounted, so late async results skip their state updates. */
-  const mountedRef = useRef(true);
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -205,13 +209,6 @@ export function PdfViewer({
 
   // Free rendered canvases when the document is closed.
   useEffect(() => () => cache.clear(), [cache]);
-
-  useEffect(
-    () => () => {
-      mountedRef.current = false;
-    },
-    [],
-  );
 
   const goToSpread = useCallback(
     (index: number, behavior: ScrollBehavior = "smooth") => {
@@ -504,18 +501,28 @@ export function PdfViewer({
     [annotations, popup],
   );
 
+  /**
+   * Quotes go through the open editor rather than straight to notes.md: a
+   * direct write would be overwritten by the panel's next autosave, and the
+   * reader would watch the quote disappear.
+   */
   const insertToNotes = useCallback(
     (highlight: Highlight) => {
-      setActionError(null);
-      appendHighlightToNotes(filePath, highlight).catch((cause: unknown) => {
-        // The write outlives the viewer if the reader closes the document
-        // while it is in flight; there is then nobody left to tell.
-        if (!mountedRef.current) return;
-        setActionError(cause instanceof Error ? cause.message : String(cause));
-        setHighlightsOpen(true);
-      });
+      setNotesOpen(true);
+      if (!notes.loaded) {
+        setNoteError("メモをまだ読み込めていないため、引用を挿入できません");
+        return;
+      }
+      if (notes.conflict !== null) {
+        setNoteError(
+          "メモが競合しています。どちらを残すか選んでから挿入してください",
+        );
+        return;
+      }
+      setNoteError(null);
+      notes.insertQuote(highlight);
     },
-    [filePath],
+    [notes],
   );
 
   const currentSpread = spreads[spreadIndex] ?? [];
@@ -545,6 +552,14 @@ export function PdfViewer({
           onClick={() => setHighlightsOpen((open) => !open)}
         >
           ハイライト
+        </button>
+        <button
+          type="button"
+          className="toolbar__button"
+          aria-pressed={notesOpen}
+          onClick={() => setNotesOpen((open) => !open)}
+        >
+          メモ
         </button>
         <span className="toolbar__title" title={fileName}>
           {fileName}
@@ -747,6 +762,30 @@ export function PdfViewer({
               // already reported above and is never going to finish.
               <p className="sidebar__status">読み込み中…</p>
             )}
+          </aside>
+        ) : null}
+
+        {notesOpen ? (
+          <aside
+            className="sidebar sidebar--right sidebar--notes"
+            aria-label="メモ"
+            // Arrow keys belong to the editor's caret here, not to page turns.
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.stopPropagation();
+              }
+            }}
+          >
+            <NotesPanel
+              content={notes.content}
+              loaded={notes.loaded}
+              status={notes.status}
+              error={notes.error ?? noteError}
+              conflict={notes.conflict}
+              onChange={notes.setContent}
+              onKeepLocal={notes.keepLocal}
+              onTakeDisk={notes.takeDisk}
+            />
           </aside>
         ) : null}
 
