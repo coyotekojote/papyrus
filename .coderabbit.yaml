@@ -30,6 +30,20 @@ reviews:
   # コメントのみ。CodeRabbit に Request changes させてマージをブロックしない
   request_changes_workflow: false
 
+  # Finishing Touches は既定で有効なため、コードを書き換える機能を明示的に無効化する。
+  # CodeRabbit にはレビューだけさせ、修正は人間（と手元のエージェント）が入れる。
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+
   auto_review:
     enabled: true
     drafts: false
