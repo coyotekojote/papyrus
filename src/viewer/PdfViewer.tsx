@@ -140,6 +140,8 @@ export function PdfViewer({
   const bodyRef = useRef<HTMLDivElement>(null);
   /** Where the current gesture started, for telling a click from a drag. */
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  /** False once unmounted, so late async results skip their state updates. */
+  const mountedRef = useRef(true);
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -203,6 +205,13 @@ export function PdfViewer({
 
   // Free rendered canvases when the document is closed.
   useEffect(() => () => cache.clear(), [cache]);
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
 
   const goToSpread = useCallback(
     (index: number, behavior: ScrollBehavior = "smooth") => {
@@ -469,6 +478,9 @@ export function PdfViewer({
     (highlight: Highlight) => {
       setNotesError(null);
       appendHighlightToNotes(filePath, highlight).catch((cause: unknown) => {
+        // The write outlives the viewer if the reader closes the document
+        // while it is in flight; there is then nobody left to tell.
+        if (!mountedRef.current) return;
         setNotesError(cause instanceof Error ? cause.message : String(cause));
         setHighlightsOpen(true);
       });
