@@ -183,6 +183,47 @@ describe("useAnnotations", () => {
     expect(vi.mocked(saveAnnotations).mock.calls[2][2]).toBe(700);
   });
 
+  it("keeps saving when each save has another edit land while in flight", async () => {
+    vi.mocked(loadAnnotations).mockResolvedValue({
+      annotations: emptyAnnotations(),
+      modifiedAtMs: 111,
+    });
+    // Every save hangs until released, so each one can have an edit land
+    // mid-flight — keeping a single flush() looping without any conflict.
+    const releases: ((value: number) => void)[] = [];
+    let mtime = 200;
+    vi.mocked(saveAnnotations).mockImplementation(
+      () =>
+        new Promise<number>((resolve) => {
+          releases.push(() => resolve((mtime += 1)));
+        }),
+    );
+
+    const { result } = renderHook(() => useAnnotations(PATH));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => result.current.addHighlight(highlight("a")));
+    await waitFor(() => expect(releases).toHaveLength(1));
+
+    for (const id of ["b", "c", "d"]) {
+      act(() => result.current.addHighlight(highlight(id)));
+      const saves = releases.length;
+      await act(async () => releases[saves - 1](0));
+      // The edit made mid-flight keeps the same flush() looping.
+      await waitFor(() => expect(releases).toHaveLength(saves + 1));
+    }
+
+    await act(async () => releases.at(-1)?.(0));
+
+    expect(result.current.error).toBeNull();
+    expect(
+      vi
+        .mocked(saveAnnotations)
+        .mock.calls.at(-1)?.[1]
+        .highlights.map((h) => h.id),
+    ).toEqual(["a", "b", "c", "d"]);
+  });
+
   it("gives up with an error when every retry keeps conflicting", async () => {
     vi.mocked(loadAnnotations).mockResolvedValue({
       annotations: emptyAnnotations(),

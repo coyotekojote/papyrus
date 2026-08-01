@@ -110,17 +110,10 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
     // Captured up front: a save that resolves after the reader moved to
     // another document must not write that document's persisted state.
     const generation = generationRef.current;
-    for (
-      let attempt = 0;
-      pendingRef.current.length > 0 && isCurrent(generation);
-      attempt += 1
-    ) {
-      if (attempt >= MAX_SAVE_ATTEMPTS) {
-        setError(
-          "注釈を保存できませんでした（ファイルが変更され続けています）",
-        );
-        return;
-      }
+    // Counts conflicts only. A successful save resets it, so a reader making
+    // many edits during one slow save never trips the give-up path.
+    let conflicts = 0;
+    while (pendingRef.current.length > 0 && isCurrent(generation)) {
       const taken = pendingRef.current.length;
       const next = applyPending(persistedRef.current.annotations);
       try {
@@ -132,8 +125,16 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
         if (!isCurrent(generation)) return;
         persistedRef.current = { annotations: next, modifiedAtMs };
         pendingRef.current.splice(0, taken);
+        conflicts = 0;
       } catch (cause) {
         if (cause instanceof SidecarConflictError) {
+          conflicts += 1;
+          if (conflicts >= MAX_SAVE_ATTEMPTS) {
+            setError(
+              "注釈を保存できませんでした（ファイルが変更され続けています）",
+            );
+            return;
+          }
           // Another writer got there first: rebase the pending mutations onto
           // whatever is on disk now and try again. A failed reload must not
           // reject flush() — that would poison flushRef's chain and block
