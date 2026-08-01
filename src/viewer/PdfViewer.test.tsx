@@ -655,6 +655,37 @@ describe("PdfViewer", () => {
       ).toBeInTheDocument();
     });
 
+    it("still hit-tests a click when the selection holds nothing to extract", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // A selection on the page itself, but one that extracts to nothing —
+      // there is no highlight to create, so this stays a plain click.
+      const blank = document.createElement("span");
+      blank.textContent = "   ";
+      page.append(blank);
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(blank);
+      // jsdom implements no Range.getClientRects; a real browser would return
+      // the (zero-area) rects of this whitespace run.
+      range.getClientRects = () => [] as unknown as DOMRectList;
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+    });
+
     it("treats a drag across a highlight as a pan, not a click on it", async () => {
       await openPanel({
         ...emptyAnnotations(),

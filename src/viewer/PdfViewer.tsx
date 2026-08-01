@@ -253,7 +253,7 @@ export function PdfViewer({
       setScrollLeft(left);
       // The popup is anchored to viewport coordinates; scrolling moves the
       // page out from under it.
-      setPopup((current) => (current ? null : current));
+      setPopup(null);
 
       const nearest = nearestItemIndex(layout, left, viewportWidth);
       if (pendingDomIndexRef.current !== null) {
@@ -385,8 +385,9 @@ export function PdfViewer({
           ? selection.getRangeAt(0)
           : null;
       const selectedPage = range ? closestPage(range.startContainer) : null;
-      // A selection somewhere else (the highlights panel, say) leaves this a
-      // plain click on the page, so it falls through to the hit-test below.
+      // Anything that does not yield a highlightable selection — no selection,
+      // one made outside the pages (in the highlights panel, say), or one with
+      // nothing to extract — leaves this a plain click, handled below.
       if (range && selectedPage) {
         const text = range.toString().trim();
         // A selection spanning pages is clipped to the page it started on.
@@ -402,8 +403,8 @@ export function PdfViewer({
             text,
             position,
           });
+          return;
         }
-        return;
       }
 
       // A pan (a touch scroll, most often) ends on whatever page it drifted
