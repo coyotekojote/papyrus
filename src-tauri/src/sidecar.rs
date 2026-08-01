@@ -9,7 +9,6 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
@@ -193,36 +192,32 @@ fn ensure_unchanged(path: &Path, base_modified_at_ms: Option<i64>) -> Result<()>
 
 // --- atomic write ---
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Writes via a same-directory tmp file + rename so a crash or a mid-write
-/// iCloud sync never leaves a half-written file at the destination.
+/// Writes via a same-directory tmp file + atomic replace so a crash or a
+/// mid-write iCloud sync never leaves a half-written file at the destination.
+/// `NamedTempFile::persist` replaces an existing destination on every platform
+/// (rename on Unix, MoveFileEx with MOVEFILE_REPLACE_EXISTING on Windows) and
+/// removes the tmp file automatically when the write fails.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().ok_or_else(|| SidecarError::Io {
         message: format!("no parent directory for {}", path.display()),
     })?;
     fs::create_dir_all(dir)?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("sidecar");
-    let tmp = dir.join(format!(
-        ".{}.tmp-{}-{}",
-        file_name,
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed),
-    ));
-    let write_result = (|| -> Result<()> {
-        let mut file = fs::File::create(&tmp)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        fs::rename(&tmp, path)?;
-        Ok(())
-    })();
-    if write_result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    let mut tmp = tempfile::Builder::new()
+        .prefix(".papyrus-tmp-")
+        .tempfile_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|err| SidecarError::Io {
+        message: err.error.to_string(),
+    })?;
+    // Fsync the directory so the rename itself survives a crash. Windows has
+    // no equivalent directory handle sync, and a failure here does not lose
+    // data (the content was already fsynced), so best-effort is enough.
+    #[cfg(unix)]
+    if let Ok(dir_file) = fs::File::open(dir) {
+        let _ = dir_file.sync_all();
     }
-    write_result
+    Ok(())
 }
 
 // --- load / save ---
@@ -248,10 +243,14 @@ fn read_annotations(path: &Path) -> Result<Option<Annotations>> {
 
 pub fn load_annotations_from(pdf_path: &Path) -> Result<LoadedAnnotations> {
     let path = annotations_path(pdf_path)?;
+    // Capture the mtime BEFORE reading: if the file changes between the two
+    // steps, the stale mtime makes the next save fail with a safe Conflict
+    // instead of silently clobbering content we never loaded.
+    let modified_at_ms = modified_at_ms(&path)?;
     match read_annotations(&path)? {
         Some(annotations) => Ok(LoadedAnnotations {
             annotations,
-            modified_at_ms: modified_at_ms(&path)?,
+            modified_at_ms,
         }),
         None => Ok(LoadedAnnotations {
             annotations: Annotations::default(),
@@ -285,6 +284,9 @@ pub fn save_annotations_to(
 
 pub fn load_notes_from(pdf_path: &Path) -> Result<LoadedNotes> {
     let path = notes_path(pdf_path)?;
+    // Same ordering rationale as load_annotations_from: mtime first, so a
+    // concurrent external change can only cause a safe Conflict later.
+    let modified_at_ms = modified_at_ms(&path)?;
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -297,7 +299,7 @@ pub fn load_notes_from(pdf_path: &Path) -> Result<LoadedNotes> {
     };
     Ok(LoadedNotes {
         content,
-        modified_at_ms: modified_at_ms(&path)?,
+        modified_at_ms,
     })
 }
 
