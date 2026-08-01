@@ -1,0 +1,118 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# レビューコメントの言語
+language: ja-JP
+
+tone_instructions: |
+  簡潔に、根拠を添えて指摘すること。
+  好みの問題ではなく、バグ・型安全性・パフォーマンス・セキュリティに関わる指摘を優先する。
+
+early_access: false
+
+# 無料プラン向け機能を有効化（public リポジトリは CodeRabbit Pro が無料）
+enable_free_tier: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: local
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  review_status: true
+  collapse_walkthrough: false
+  poem: false
+  # コメントのみ。CodeRabbit に Request changes させてマージをブロックしない
+  request_changes_workflow: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+    ignore_title_keywords:
+      - WIP
+      - wip
+
+  pre_merge_checks:
+    description:
+      mode: warning
+    docstrings:
+      mode: off
+
+  # ビルド成果物・依存・生成物はレビュー対象外
+  path_filters:
+    - "!node_modules/**"
+    - "!dist/**"
+    - "!src-tauri/target/**"
+    - "!src-tauri/gen/**"
+    - "!public/pdfjs/**"
+    - "!package-lock.json"
+
+  path_instructions:
+    - path: "src/**/*.{ts,tsx}"
+      instructions: |
+        React 19 + TypeScript (strict) のフロントエンドコード。以下を重点的に見ること:
+        - `any` / 不要な型アサーション (`as`) を避け、型で表現できているか
+        - useEffect のクリーンアップ漏れ、イベントリスナや AbortController の解放漏れ
+        - hooks の依存配列の過不足、再レンダリングを誘発する不要な再生成
+        - 非同期処理のエラーハンドリング（握りつぶしていないか）
+        - 型のみの import は `import type` を使っているか
+
+    - path: "src/**/*pdf*"
+      instructions: |
+        pdf.js (pdfjs-dist) を扱うコード。以下を確認すること:
+        - PDFDocumentProxy / PDFPageProxy / RenderTask を破棄・キャンセルしているか（メモリリーク）
+        - ページ切り替えやアンマウント時に進行中の render を cancel しているか
+        - worker の設定パスがバンドル構成と整合しているか
+
+    - path: "src/**/*.test.{ts,tsx}"
+      instructions: |
+        Vitest + Testing Library のテスト。以下を確認すること:
+        - 何も検証していないアサーション（`expect(true).toBe(true)` 等）がないか
+        - 具体的な入力と期待出力を検証しているか、境界値・異常系を含むか
+        - 実装詳細ではなくユーザーから見た振る舞いを検証しているか
+        - テストを通すためだけの本番コード側の分岐やマジックナンバーがないか
+
+    - path: "src-tauri/**/*.rs"
+      instructions: |
+        Tauri 2 のバックエンド (Rust)。以下を重点的に見ること:
+        - `unwrap()` / `expect()` による panic の可能性、Result での伝播
+        - コマンドの入力検証、特にファイルパスのトラバーサル
+        - フロントエンドに公開するコマンドの権限が過剰でないか
+
+    - path: "src-tauri/{capabilities,permissions}/**"
+      instructions: |
+        Tauri の capability / permission 定義。最小権限になっているか、
+        fs や dialog のスコープが必要以上に広くないかを確認すること。
+
+    - path: ".github/workflows/**"
+      instructions: |
+        GitHub Actions。以下を確認すること:
+        - action は可能な限りタグではなくコミット SHA で固定されているか
+        - `permissions` が最小限に設定されているか
+        - シークレットがログに出力されうる箇所がないか
+
+    - path: "docs/**/*.md"
+      instructions: |
+        設計ドキュメント。実装と矛盾していないか、
+        古くなった記述や存在しない API への言及がないかを確認すること。
+
+  tools:
+    eslint:
+      enabled: true
+    reactDoctor:
+      enabled: true
+    clippy:
+      enabled: true
+    actionlint:
+      enabled: true
+    markdownlint:
+      enabled: true
+    gitleaks:
+      enabled: true
