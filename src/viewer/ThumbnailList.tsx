@@ -3,17 +3,18 @@ import type { PageSize, PdfDocumentHandle } from "../pdf";
 import { pageDisplaySize, pageSizeAt } from "./layout";
 import { PageCanvas } from "./PageCanvas";
 import { PageRenderCache } from "./page-cache";
-import {
-  computeLayout,
-  rangeIncludes,
-  scrollOffsetForItem,
-  visibleRange,
-} from "./virtualization";
+import { computeLayout, rangeIncludes, visibleRange } from "./virtualization";
 
 /** Width of a thumbnail in CSS pixels; the scale follows from the page size. */
 const THUMBNAIL_WIDTH = 120;
 /** Vertical gap between thumbnails, including room for the page number. */
 const THUMBNAIL_GAP = 28;
+/**
+ * List padding, applied inline rather than in the stylesheet: the follow-reader
+ * scroll below has to account for it, so it lives next to that math.
+ */
+const LIST_PADDING_TOP = 12;
+const LIST_PADDING_BOTTOM = 24;
 /** Thumbnails rendered above and below the visible window. */
 const OVERSCAN = 2;
 
@@ -107,16 +108,32 @@ export function ThumbnailList({
   }, []);
 
   // Follow the reader. Scrolled explicitly rather than with `scrollIntoView`,
-  // which cannot reach a thumbnail that virtualization has not mounted.
+  // which cannot reach a thumbnail that virtualization has not mounted. The
+  // clamp uses the scroller's real extent, not the layout's: the layout knows
+  // nothing about the list padding, and clamping against it would stop the
+  // auto-scroll short of the last thumbnail.
   useEffect(() => {
-    scrollerRef.current?.scrollTo({
-      top: scrollOffsetForItem(layout, currentPage - 1, viewportHeight),
+    const scroller = scrollerRef.current;
+    const item = layout[currentPage - 1];
+    if (!scroller || !item) return;
+    const centred =
+      item.size >= viewportHeight
+        ? item.offset
+        : item.offset - (viewportHeight - item.size) / 2;
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTo({
+      top: Math.min(Math.max(LIST_PADDING_TOP + centred, 0), max),
       behavior: "auto",
     });
   }, [currentPage, layout, viewportHeight]);
 
   return (
-    <div className="thumbnails" ref={scrollerRef} onScroll={handleScroll}>
+    <div
+      className="thumbnails"
+      ref={scrollerRef}
+      onScroll={handleScroll}
+      style={{ padding: `${LIST_PADDING_TOP}px 0 ${LIST_PADDING_BOTTOM}px` }}
+    >
       {thumbnails.map(({ scale, size }, index) => {
         const pageNumber = index + 1;
         const active = pageNumber === currentPage;

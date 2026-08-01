@@ -42,21 +42,22 @@ export function OutlineSidebar({
   };
 
   return (
-    <ul className="outline" role="tree" aria-label="目次">
+    // Deliberately a plain list, not an ARIA tree: `role="tree"` promises the
+    // full roving-tabindex arrow-key protocol, which these ordinary buttons do
+    // not (and need not) implement. Collapse state lives on the twisty button,
+    // the current section on the link.
+    <ul className="outline" aria-label="目次">
       {rows.map((row) => {
         // A bookmark may carry no title at all; an empty label would make the
         // row invisible and its buttons unnameable for assistive tech.
         const trimmed = row.title.trim();
         const title = trimmed === "" ? "（無題）" : trimmed;
+        const active = row.id === activeId;
         return (
           <li
             key={row.id}
-            className="outline__row"
-            role="treeitem"
-            aria-level={row.depth + 1}
-            aria-selected={row.id === activeId}
-            aria-expanded={row.hasChildren ? row.expanded : undefined}
-            ref={row.id === activeId ? activeRef : undefined}
+            className={`outline__row${active ? " outline__row--active" : ""}`}
+            ref={active ? activeRef : undefined}
           >
             <span
               className="outline__indent"
@@ -67,6 +68,7 @@ export function OutlineSidebar({
                 type="button"
                 className="outline__twisty"
                 onClick={() => toggle(row.id)}
+                aria-expanded={row.expanded}
                 aria-label={`${title} を${row.expanded ? "折りたたむ" : "展開する"}`}
               >
                 {row.expanded ? "▾" : "▸"}
@@ -77,6 +79,7 @@ export function OutlineSidebar({
             <button
               type="button"
               className="outline__link"
+              aria-current={active ? "true" : undefined}
               // A bookmark whose destination could not be resolved has nowhere
               // to jump to, but still belongs in the tree as a heading.
               disabled={row.pageNumber === null}

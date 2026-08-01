@@ -273,7 +273,7 @@ describe("PdfViewer", () => {
     it("stays closed until the toolbar button is pressed", () => {
       const { doc } = renderViewer(PAGE_COUNT, outline);
 
-      expect(screen.queryByRole("tree")).toBeNull();
+      expect(screen.queryByRole("list", { name: "目次" })).toBeNull();
       expect(doc.getOutline).not.toHaveBeenCalled();
     });
 
@@ -282,7 +282,7 @@ describe("PdfViewer", () => {
 
       expect(doc.getOutline).toHaveBeenCalledOnce();
       expect(
-        (await screen.findAllByRole("treeitem")).map((item) =>
+        (await screen.findAllByRole("listitem")).map((item) =>
           item.textContent?.replace(/[▾▸]/g, ""),
         ),
       ).toEqual(["序章1", "本論3", "後半6", "付録"]);
@@ -290,16 +290,16 @@ describe("PdfViewer", () => {
 
     it("closes again on a second press", async () => {
       const { user } = await openSidebar();
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       await user.click(screen.getByRole("button", { name: "目次" }));
 
-      expect(screen.queryByRole("tree")).toBeNull();
+      expect(screen.queryByRole("list", { name: "目次" })).toBeNull();
     });
 
     it("jumps to the page a bookmark points at", async () => {
       const { user } = await openSidebar();
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       await user.click(screen.getByRole("button", { name: /後半/ }));
 
@@ -308,14 +308,14 @@ describe("PdfViewer", () => {
 
     it("offers no jump for a bookmark whose destination is unresolved", async () => {
       await openSidebar();
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       expect(screen.getByRole("button", { name: "付録" })).toBeDisabled();
     });
 
     it("hides and restores a bookmark's children", async () => {
       const { user } = await openSidebar();
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       await user.click(
         screen.getByRole("button", { name: "本論 を折りたたむ" }),
@@ -328,12 +328,12 @@ describe("PdfViewer", () => {
 
     it("highlights the section the reader is currently in", async () => {
       const { user } = await openSidebar();
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       const selected = () =>
         screen
-          .getAllByRole("treeitem")
-          .find((item) => item.getAttribute("aria-selected") === "true")
+          .getAllByRole("listitem")
+          .find((item) => item.querySelector('[aria-current="true"]'))
           ?.textContent?.replace(/[▾▸]/g, "");
 
       expect(selected()).toBe("序章1");
@@ -349,7 +349,7 @@ describe("PdfViewer", () => {
 
     it("keeps arrow keys for the sidebar while it has focus", async () => {
       const { user } = await openSidebar();
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       screen.getByRole("button", { name: /序章/ }).focus();
       await user.keyboard("{ArrowRight}");
@@ -362,7 +362,7 @@ describe("PdfViewer", () => {
       await openSidebar(PAGE_COUNT, [
         { title: "  序章  ", pageNumber: 1, children: [] },
       ]);
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       expect(screen.getByRole("button", { name: "序章 1" })).toHaveTextContent(
         /^序章1$/,
@@ -377,7 +377,7 @@ describe("PdfViewer", () => {
           children: [{ title: "節", pageNumber: 3, children: [] }],
         },
       ]);
-      await screen.findByRole("tree");
+      await screen.findByRole("list", { name: "目次" });
 
       await user.click(screen.getByRole("button", { name: "（無題） 2" }));
       expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();

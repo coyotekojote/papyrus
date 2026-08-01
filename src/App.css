@@ -357,7 +357,7 @@ body {
   cursor: default;
 }
 
-.outline__row[aria-selected="true"] .outline__link {
+.outline__row--active .outline__link {
   background: rgb(76 141 255 / 18%);
   color: var(--accent);
 }
@@ -378,11 +378,14 @@ body {
 
 .thumbnails {
   flex: 1 1 auto;
+  /* Without this a flex child refuses to shrink, and the list overflows the
+     sidebar instead of scrolling. Padding lives in the component, next to the
+     scroll math that must account for it. */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 28px;
-  padding: 0.75rem 0 1.5rem;
   overflow-y: auto;
 }
 
