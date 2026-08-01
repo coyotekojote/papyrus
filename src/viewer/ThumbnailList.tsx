@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PageSize, PdfDocumentHandle } from "../pdf";
 import { pageDisplaySize, pageSizeAt } from "./layout";
 import { PageCanvas } from "./PageCanvas";
@@ -42,6 +42,26 @@ export function ThumbnailList({
   const [viewportHeight, setViewportHeight] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
+
+  // Scroll events fire faster than frames paint; fold them to one state
+  // update per frame, the same way the main viewer's scroller does.
+  const scrollFrameRef = useRef<number | null>(null);
+  const handleScroll = useCallback(() => {
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const scroller = scrollerRef.current;
+      if (scroller) setScrollTop(scroller.scrollTop);
+    });
+  }, []);
+  useEffect(
+    () => () => {
+      if (scrollFrameRef.current !== null) {
+        cancelAnimationFrame(scrollFrameRef.current);
+      }
+    },
+    [],
+  );
 
   // Thumbnails are rendered at their own scale, so they need a cache of their
   // own rather than evicting the main viewer's full-size pages.
@@ -96,11 +116,7 @@ export function ThumbnailList({
   }, [currentPage, layout, viewportHeight]);
 
   return (
-    <div
-      className="thumbnails"
-      ref={scrollerRef}
-      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-    >
+    <div className="thumbnails" ref={scrollerRef} onScroll={handleScroll}>
       {thumbnails.map(({ scale, size }, index) => {
         const pageNumber = index + 1;
         const active = pageNumber === currentPage;

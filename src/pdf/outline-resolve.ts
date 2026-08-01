@@ -64,17 +64,44 @@ async function resolvePageNumber(
  * Converts a pdf.js outline into the engine-agnostic tree, resolving every
  * destination to a page number. Nodes that cannot be resolved are kept with a
  * null `pageNumber` so the tree still reflects the document's structure.
+ *
+ * Destinations resolve in batches of `chunkSize`, mirroring `loadPageSizes`:
+ * each lookup is a worker round-trip, and a huge outline must not fire them
+ * all at once.
  */
 export async function resolveOutline(
   items: readonly RawOutlineItem[] | null | undefined,
   doc: DestinationLookup,
+  chunkSize = 32,
 ): Promise<OutlineNode[]> {
-  if (!items || items.length === 0) return [];
-  return Promise.all(
-    items.map(async (item) => ({
-      title: item.title ?? "",
-      pageNumber: await resolvePageNumber(item.dest, doc),
-      children: await resolveOutline(item.items, doc),
-    })),
-  );
+  if (!Number.isInteger(chunkSize) || chunkSize < 1) {
+    throw new RangeError(
+      `chunkSize must be a positive integer, got ${chunkSize}`,
+    );
+  }
+
+  // Build the whole tree synchronously first; only the page lookups are async.
+  const pending: { node: OutlineNode; dest: RawOutlineItem["dest"] }[] = [];
+  const build = (
+    raw: readonly RawOutlineItem[] | null | undefined,
+  ): OutlineNode[] =>
+    (raw ?? []).map((item) => {
+      const node: OutlineNode = {
+        title: item.title ?? "",
+        pageNumber: null,
+        children: build(item.items),
+      };
+      if (item.dest != null) pending.push({ node, dest: item.dest });
+      return node;
+    });
+
+  const nodes = build(items);
+  for (let start = 0; start < pending.length; start += chunkSize) {
+    await Promise.all(
+      pending.slice(start, start + chunkSize).map(async ({ node, dest }) => {
+        node.pageNumber = await resolvePageNumber(dest, doc);
+      }),
+    );
+  }
+  return nodes;
 }

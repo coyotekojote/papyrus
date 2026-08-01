@@ -158,4 +158,38 @@ describe("resolveOutline", () => {
 
     expect(outline[0].title).toBe("");
   });
+
+  it("never has more than chunkSize lookups in flight", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const doc = lookup({
+      getPageIndex: vi.fn(async (ref) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        inFlight -= 1;
+        return ref.num / 10 - 1;
+      }),
+    });
+    const items = Array.from({ length: 7 }, (_, i) => ({
+      title: `第${i + 1}章`,
+      dest: [{ num: (i + 1) * 10, gen: 0 }],
+    }));
+
+    const outline = await resolveOutline(items, doc, 2);
+
+    expect(maxInFlight).toBeLessThanOrEqual(2);
+    expect(outline.map((node) => node.pageNumber)).toEqual([
+      1, 2, 3, 4, 5, 6, 7,
+    ]);
+  });
+
+  it("rejects a chunk size that is not a positive integer", async () => {
+    await expect(resolveOutline([{ dest: [0] }], lookup(), 0)).rejects.toThrow(
+      RangeError,
+    );
+    await expect(
+      resolveOutline([{ dest: [0] }], lookup(), 1.5),
+    ).rejects.toThrow(RangeError);
+  });
 });
