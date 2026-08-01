@@ -704,6 +704,52 @@ describe("PdfViewer", () => {
       ).toBeNull();
     });
 
+    it("does not mistake a selection inside a thumbnail for a page selection", async () => {
+      mockSidecar({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+      // No bookmarks, so the sidebar falls back to thumbnails — which are
+      // PageCanvases carrying `data-page` just like the pages in the scroller.
+      await user.click(screen.getByRole("button", { name: "目次" }));
+      await screen.findByRole("button", { name: "2ページ" });
+      const thumbnailPage = document.querySelector<HTMLElement>(
+        ".thumbnails .page[data-page]",
+      );
+      if (!thumbnailPage) throw new Error("no thumbnail page is rendered");
+      // jsdom lays nothing out; without a real box the selection would produce
+      // no rects at all and the mix-up could not show itself.
+      thumbnailPage.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 60, height: 84 }) as DOMRect;
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(thumbnailPage);
+      range.getClientRects = () =>
+        [{ left: 0, top: 0, width: 40, height: 10 }] as unknown as DOMRectList;
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+
+      // The click hit-tests the page instead of offering to highlight a
+      // selection whose coordinates belong to a thumbnail.
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("toolbar", { name: "ハイライトを作成" }),
+      ).toBeNull();
+    });
+
     it("forgets a gesture that was released away from the pages", async () => {
       await openPanel({
         ...emptyAnnotations(),

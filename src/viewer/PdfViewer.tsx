@@ -407,7 +407,16 @@ export function PdfViewer({
         selection && !selection.isCollapsed && selection.rangeCount > 0
           ? selection.getRangeAt(0)
           : null;
-      const selectedPage = range ? closestPage(range.startContainer) : null;
+      // Thumbnails are pages too (same PageCanvas, same `data-page`), so a
+      // selection has to be inside the scroller to be one of *these* pages —
+      // otherwise its rects would be normalized against a thumbnail's box.
+      const selectedInScroller = range
+        ? closestPage(range.startContainer)
+        : null;
+      const selectedPage =
+        selectedInScroller && scrollerRef.current?.contains(selectedInScroller)
+          ? selectedInScroller
+          : null;
       // Anything that does not yield a highlightable selection — no selection,
       // one made outside the pages (in the highlights panel, say), or one with
       // nothing to extract — leaves this a plain click, handled below.
