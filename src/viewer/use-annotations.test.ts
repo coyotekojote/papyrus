@@ -242,6 +242,42 @@ describe("useAnnotations", () => {
     expect(saveAnnotations).toHaveBeenCalledTimes(3);
   });
 
+  it("does not report the previous document's give-up on the current one", async () => {
+    vi.mocked(loadAnnotations).mockResolvedValue({
+      annotations: emptyAnnotations(),
+      modifiedAtMs: 111,
+    });
+    // The save that trips the give-up path stays in flight until released, so
+    // the document can be switched out from under it first.
+    let rejectLastSave!: (reason: unknown) => void;
+    vi.mocked(saveAnnotations)
+      .mockRejectedValueOnce(new SidecarConflictError("annotations.json"))
+      .mockRejectedValueOnce(new SidecarConflictError("annotations.json"))
+      .mockReturnValueOnce(
+        new Promise<number>((_, reject) => (rejectLastSave = reject)),
+      )
+      .mockResolvedValue(900);
+
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useAnnotations(path),
+      { initialProps: { path: PATH } },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => result.current.addHighlight(highlight("doomed")));
+    await waitFor(() => expect(saveAnnotations).toHaveBeenCalledTimes(3));
+
+    rerender({ path: "/papers/other.pdf" });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    await act(async () => {
+      rejectLastSave(new SidecarConflictError("annotations.json"));
+    });
+
+    // The give-up belongs to the document the reader has left.
+    expect(result.current.error).toBeNull();
+  });
+
   it("surfaces a non-conflict save failure", async () => {
     vi.mocked(loadAnnotations).mockResolvedValue({
       annotations: emptyAnnotations(),

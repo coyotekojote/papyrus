@@ -138,9 +138,11 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
         if (cause instanceof SidecarConflictError) {
           conflicts += 1;
           if (conflicts >= MAX_SAVE_ATTEMPTS) {
-            setError(
-              "注釈を保存できませんでした（ファイルが変更され続けています）",
-            );
+            if (isCurrent(generation)) {
+              setError(
+                "注釈を保存できませんでした（ファイルが変更され続けています）",
+              );
+            }
             return;
           }
           // Another writer got there first: rebase the pending mutations onto
