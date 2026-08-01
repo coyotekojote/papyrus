@@ -17,7 +17,7 @@ export interface RectLike {
 export interface HighlightColor {
   id: string;
   label: string;
-  /** Solid swatch color; the on-page rect gets alpha via HIGHLIGHT_ALPHA. */
+  /** Solid swatch color; the on-page rect is faded by the CSS opacity. */
   css: string;
 }
 

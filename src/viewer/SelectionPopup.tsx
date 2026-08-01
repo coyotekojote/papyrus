@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { HIGHLIGHT_COLORS } from "./highlights";
 
 export interface PopupPosition {
@@ -11,7 +11,7 @@ interface PopupShellProps {
   position: PopupPosition;
   label: string;
   onDismiss: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }
 
 /** Floating action bar anchored near the pointer; Escape dismisses it. */

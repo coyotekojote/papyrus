@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type { Highlight, NormalizedRect } from "../files/sidecar";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { HighlightsPanel } from "./HighlightsPanel";
@@ -352,7 +359,7 @@ export function PdfViewer({
    * Both popups anchor to the pointer, positioned inside `.viewer__body`.
    */
   const handlePointerUp = useCallback(
-    (event: React.PointerEvent) => {
+    (event: ReactPointerEvent) => {
       const bodyRect = bodyRef.current?.getBoundingClientRect();
       if (!bodyRect) return;
       const position: PopupPosition = {
