@@ -1,4 +1,5 @@
 export type {
+  OutlineNode,
   PageSize,
   PdfDocumentHandle,
   PdfRenderer,

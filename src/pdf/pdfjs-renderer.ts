@@ -11,8 +11,10 @@ import {
 import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
 
 import { backingStoreRatio } from "./canvas-scale";
+import { resolveOutline } from "./outline-resolve";
 import {
   PdfPageOutOfRangeError,
+  type OutlineNode,
   type PageSize,
   type PdfDocumentHandle,
   type PdfRenderer,
@@ -29,6 +31,7 @@ class PdfJsDocument implements PdfDocumentHandle {
   readonly pageCount: number;
 
   private readonly pages = new Map<number, Promise<PDFPageProxy>>();
+  private outline: Promise<OutlineNode[]> | null = null;
   private destroyed = false;
 
   constructor(
@@ -99,6 +102,18 @@ class PdfJsDocument implements PdfDocumentHandle {
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  /**
+   * Resolving every bookmark costs one worker round-trip per destination, so
+   * the whole tree is resolved once and the promise reused from then on.
+   */
+  getOutline(): Promise<OutlineNode[]> {
+    this.outline ??= this.doc
+      .getOutline()
+      .then((items) => resolveOutline(items, this.doc))
+      .catch(() => []);
+    return this.outline;
   }
 
   async destroy(): Promise<void> {

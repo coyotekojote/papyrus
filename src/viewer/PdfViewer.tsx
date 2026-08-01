@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PageSize, PdfDocumentHandle } from "../pdf";
+import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
+import { OutlineSidebar } from "./OutlineSidebar";
 import { PageCanvas } from "./PageCanvas";
+import { ThumbnailList } from "./ThumbnailList";
 import {
   PAGE_GAP,
   SPREAD_PADDING,
@@ -60,6 +62,9 @@ export function PdfViewer({
   const [currentPage, setCurrentPage] = useState(1);
   const [viewportWidth, setViewportWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  /** null until the outline has been fetched; the fetch happens on first open. */
+  const [outline, setOutline] = useState<OutlineNode[] | null>(null);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
   const cacheRef = useRef<PageRenderCache | null>(null);
@@ -193,6 +198,32 @@ export function PdfViewer({
     [],
   );
 
+  const goToPage = useCallback(
+    (pageNumber: number) => {
+      const index = spreadIndexOfPage(spreads, pageNumber);
+      if (index >= 0) goToSpread(index, "auto");
+    },
+    [goToSpread, spreads],
+  );
+
+  // Fetched lazily: a document the reader never opens the sidebar for should
+  // not pay for resolving every bookmark destination.
+  useEffect(() => {
+    if (!sidebarOpen || outline !== null) return;
+    let cancelled = false;
+    void doc
+      .getOutline()
+      .then((nodes) => {
+        if (!cancelled) setOutline(nodes);
+      })
+      .catch(() => {
+        if (!cancelled) setOutline([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [doc, sidebarOpen, outline]);
+
   const runZoomCommand = useCallback((command: ZoomCommand) => {
     setZoom((current) => applyZoomCommand(current, command));
   }, []);
@@ -262,6 +293,14 @@ export function PdfViewer({
       <header className="toolbar">
         <button type="button" className="toolbar__button" onClick={onClose}>
           ← ライブラリ
+        </button>
+        <button
+          type="button"
+          className="toolbar__button"
+          aria-pressed={sidebarOpen}
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          目次
         </button>
         <span className="toolbar__title" title={fileName}>
           {fileName}
@@ -339,60 +378,85 @@ export function PdfViewer({
         </div>
       </header>
 
-      <div
-        className="scroller"
-        ref={scrollerRef}
-        onScroll={handleScroll}
-        tabIndex={0}
-        role="region"
-        aria-label="PDFページ"
-      >
-        {domSpreads.map((spread, domIndex) => {
-          const box = layout[domIndex];
-          const visible = rangeIncludes(range, domIndex);
-          return (
-            <div
-              className="spread"
-              key={leadPage(spread)}
-              style={{ width: box?.size ?? 0 }}
-            >
-              {visible ? (
-                visualPageOrder(spread, binding).map((pageNumber) => {
-                  const size = pageDisplaySize(
-                    pageSizeAt(pageSizes, pageNumber),
-                    zoom,
-                  );
-                  return (
-                    <PageCanvas
-                      key={pageNumber}
-                      doc={doc}
-                      cache={cache}
-                      pageNumber={pageNumber}
-                      scale={zoom}
-                      width={size.width}
-                      height={size.height}
-                    />
-                  );
-                })
-              ) : (
-                // Not rendered: reserve the exact page footprint so the scroll
-                // track never shifts when this spread comes into view.
-                <div
-                  className="page page--placeholder"
-                  style={{
-                    width: spreadContentWidth(
-                      spread,
-                      pageSizes,
+      <div className="viewer__body">
+        {sidebarOpen ? (
+          <aside className="sidebar" aria-label="目次">
+            {outline === null ? (
+              <p className="sidebar__status">読み込み中…</p>
+            ) : outline.length > 0 ? (
+              <OutlineSidebar
+                nodes={outline}
+                currentPage={currentPage}
+                onJumpToPage={goToPage}
+              />
+            ) : (
+              // No bookmarks: thumbnails are the only table of contents this
+              // document can offer.
+              <ThumbnailList
+                doc={doc}
+                pageSizes={pageSizes}
+                currentPage={currentPage}
+                onJumpToPage={goToPage}
+              />
+            )}
+          </aside>
+        ) : null}
+
+        <div
+          className="scroller"
+          ref={scrollerRef}
+          onScroll={handleScroll}
+          tabIndex={0}
+          role="region"
+          aria-label="PDFページ"
+        >
+          {domSpreads.map((spread, domIndex) => {
+            const box = layout[domIndex];
+            const visible = rangeIncludes(range, domIndex);
+            return (
+              <div
+                className="spread"
+                key={leadPage(spread)}
+                style={{ width: box?.size ?? 0 }}
+              >
+                {visible ? (
+                  visualPageOrder(spread, binding).map((pageNumber) => {
+                    const size = pageDisplaySize(
+                      pageSizeAt(pageSizes, pageNumber),
                       zoom,
-                      PAGE_GAP,
-                    ),
-                    height: spreadContentHeight(spread, pageSizes, zoom),
-                  }}
-                />
-              )}
-            </div>
-          );
-        })}
+                    );
+                    return (
+                      <PageCanvas
+                        key={pageNumber}
+                        doc={doc}
+                        cache={cache}
+                        pageNumber={pageNumber}
+                        scale={zoom}
+                        width={size.width}
+                        height={size.height}
+                      />
+                    );
+                  })
+                ) : (
+                  // Not rendered: reserve the exact page footprint so the scroll
+                  // track never shifts when this spread comes into view.
+                  <div
+                    className="page page--placeholder"
+                    style={{
+                      width: spreadContentWidth(
+                        spread,
+                        pageSizes,
+                        zoom,
+                        PAGE_GAP,
+                      ),
+                      height: spreadContentHeight(spread, pageSizes, zoom),
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
