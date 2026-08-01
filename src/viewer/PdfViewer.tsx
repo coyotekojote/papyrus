@@ -183,6 +183,10 @@ export function PdfViewer({
   dragRef.current = drag;
   /** Aborts an in-flight region render when the reader leaves the document. */
   const clipAbortRef = useRef<AbortController | null>(null);
+  /** The latest `createClip`, for the same reason as `dragRef`. */
+  const createClipRef = useRef<
+    (page: number, rect: NormalizedRect) => Promise<void>
+  >(() => Promise.resolve());
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -588,6 +592,9 @@ export function PdfViewer({
           rect,
           signal: controller.signal,
         });
+        // Checked before the write, not only after it: a drag the reader has
+        // already replaced must not leave a PNG behind that nothing refers to.
+        if (controller.signal.aborted) return;
         const file = await saveClip(filePath, await blobToBase64(png));
         if (controller.signal.aborted) return;
         const clip = makeClip({ page, rect, file, createdAt: new Date() });
@@ -605,6 +612,8 @@ export function PdfViewer({
     },
     [annotations, appendToNotes, doc, filePath, notes],
   );
+
+  createClipRef.current = createClip;
 
   const beginClipDrag = useCallback((event: ReactPointerEvent) => {
     const pageElement = closestPage(
@@ -651,7 +660,7 @@ export function PdfViewer({
         finished.pageRect,
       );
       // Too small to be a region: treated as a stray click, silently.
-      if (rect) void createClip(finished.page, rect);
+      if (rect) void createClipRef.current(finished.page, rect);
     };
     const onCancel = () => setDrag(null);
 
@@ -663,10 +672,13 @@ export function PdfViewer({
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
     };
-    // Only whether a drag is running matters here; its position is read from
-    // the ref, so a re-registration per pointer move is avoided.
+    // Only whether a drag is running matters here. Both the drag itself and
+    // the cut it ends in are read from refs: `createClip` closes over the
+    // notes and annotations hooks, whose results are new objects on every
+    // render, so depending on it would re-register these listeners on every
+    // pointer move.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drag === null, createClip]);
+  }, [drag === null]);
 
   // Escape backs out one step: the drag in progress, then the mode itself.
   useEffect(() => {

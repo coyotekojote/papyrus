@@ -394,7 +394,11 @@ fn next_clip_index(clips_dir: &Path) -> Result<u32> {
             highest = highest.max(index);
         }
     }
-    Ok(highest + 1)
+    // Saturating: the folder is shared with other devices and editors, so a
+    // name as absurd as clip-4294967295.png is still reachable input. Landing
+    // on u32::MAX leaves save_clip_to no name to try, which is an ordinary Io
+    // error — unlike the overflow panic a plain `+ 1` would raise in debug.
+    Ok(highest.saturating_add(1))
 }
 
 /// Writes `bytes` as the next `clips/clip-NNNN.png` and returns that path,
@@ -786,6 +790,22 @@ mod tests {
         }
 
         assert_eq!(save_clip_to(&pdf, b"png").unwrap(), "clips/clip-0001.png");
+    }
+
+    #[test]
+    fn save_clip_fails_instead_of_overflowing_at_the_last_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        let clips = sidecar_dir(&pdf).unwrap().join(CLIPS_DIR);
+        fs::create_dir_all(&clips).unwrap();
+        // Nothing this build wrote, but the folder is shared with other
+        // devices and editors, so the name is reachable.
+        fs::write(clips.join(format!("clip-{}.png", u32::MAX)), b"x").unwrap();
+
+        assert!(matches!(
+            save_clip_to(&pdf, b"png"),
+            Err(SidecarError::Io { .. })
+        ));
     }
 
     #[test]

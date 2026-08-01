@@ -9,14 +9,19 @@ import type { RegionRect } from "./types";
  * off the page collapses to zero size, which the caller rejects.
  */
 export function clampRegion(rect: RegionRect): RegionRect {
-  const left = clampUnit(Math.min(rect.x, rect.x + rect.w));
-  const right = clampUnit(Math.max(rect.x, rect.x + rect.w));
-  const top = clampUnit(Math.min(rect.y, rect.y + rect.h));
-  const bottom = clampUnit(Math.max(rect.y, rect.y + rect.h));
+  const left = clampUnitOrZero(Math.min(rect.x, rect.x + rect.w));
+  const right = clampUnitOrZero(Math.max(rect.x, rect.x + rect.w));
+  const top = clampUnitOrZero(Math.min(rect.y, rect.y + rect.h));
+  const bottom = clampUnitOrZero(Math.max(rect.y, rect.y + rect.h));
   return { x: left, y: top, w: right - left, h: bottom - top };
 }
 
-function clampUnit(value: number): number {
+/**
+ * Deliberately not `viewer/normalize.ts`'s `clampUnit`: that one clamps
+ * measurements the DOM produced, which are always numbers, while a rect out of
+ * annotations.json may hold anything. The name says which of the two this is.
+ */
+function clampUnitOrZero(value: number): number {
   // NaN survives Math.min/Math.max, so it is caught explicitly rather than
   // reaching the canvas as a NaN width. Infinities need no special case: they
   // clamp to the page edge like any out-of-range coordinate.

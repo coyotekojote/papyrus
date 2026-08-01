@@ -19,9 +19,15 @@ export function blobToBase64(blob: Blob): Promise<string> {
         return;
       }
       // "data:image/png;base64,AAAA" — everything up to the comma is the
-      // media type the caller already knows.
+      // media type the caller already knows. A result without one is not a
+      // data URL at all; resolving to "" there would write a 0-byte clip and
+      // leave the note pointing at a broken image, so it fails instead.
       const comma = url.indexOf(",");
-      resolve(comma < 0 ? "" : url.slice(comma + 1));
+      if (comma < 0) {
+        reject(new Error("Failed to encode the image"));
+        return;
+      }
+      resolve(url.slice(comma + 1));
     };
     reader.readAsDataURL(blob);
   });

@@ -1033,6 +1033,34 @@ describe("PdfViewer", () => {
       );
     });
 
+    it("drops a cut the reader replaced with another drag", async () => {
+      const { doc, page } = await startClipping();
+      // The first render never finishes before the second drag starts, so the
+      // abandoned clip must not reach the disk at all.
+      let releaseFirst: (() => void) | undefined;
+      vi.mocked(doc.renderRegion)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseFirst = () =>
+                resolve(new Blob([new Uint8Array([1, 2, 3])]));
+            }),
+        )
+        .mockImplementation(async () => new Blob([new Uint8Array([4, 5, 6])]));
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+      await drag(page, { x: 20, y: 28 }, { x: 70, y: 98 });
+      await act(async () => {
+        releaseFirst?.();
+      });
+
+      // Only the second drag's region was written and recorded.
+      await waitFor(() => expect(saveClip).toHaveBeenCalledTimes(1));
+      const saved = vi.mocked(saveAnnotations).mock.calls.at(-1)?.[1];
+      expect(saved?.clips).toHaveLength(1);
+      expect(saved?.clips[0].rect).toEqual({ x: 0.2, y: 0.2, w: 0.5, h: 0.5 });
+    });
+
     it("ignores a drag too small to be a region", async () => {
       const { doc, page } = await startClipping();
 
