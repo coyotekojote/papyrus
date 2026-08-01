@@ -197,8 +197,15 @@ body {
   color: var(--text-muted);
 }
 
+.viewer__body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
 .scroller {
   flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   overflow-x: auto;
@@ -230,6 +237,9 @@ body {
 }
 
 .page--placeholder {
+  /* Also rendered as a <span> (thumbnail fallback): stay a block so the
+     reserved width/height always take effect. */
+  display: block;
   background: var(--surface-raised);
   border: 1px dashed var(--border);
   box-shadow: none;
@@ -264,4 +274,132 @@ body {
   color: #b00;
   font-size: 0.8rem;
   text-align: center;
+}
+
+/* ---------- table of contents sidebar ---------- */
+
+.sidebar {
+  flex: 0 0 auto;
+  width: 15rem;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.sidebar__status {
+  margin: 1rem 0.8rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.outline {
+  flex: 1 1 auto;
+  min-height: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0.4rem 0;
+  overflow-y: auto;
+}
+
+.outline__row {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  padding: 0 0.3rem;
+}
+
+.outline__indent {
+  flex: 0 0 auto;
+}
+
+.outline__twisty {
+  flex: 0 0 auto;
+  width: 1.2rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.outline__twisty--empty {
+  cursor: default;
+}
+
+.outline__link {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.outline__link:hover:not(:disabled) {
+  background: rgb(255 255 255 / 6%);
+}
+
+.outline__link:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.outline__row--active .outline__link {
+  background: rgb(76 141 255 / 18%);
+  color: var(--accent);
+}
+
+.outline__title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline__page {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.thumbnails {
+  flex: 1 1 auto;
+  /* Without this a flex child refuses to shrink, and the list overflows the
+     sidebar instead of scrolling. Padding lives in the component, next to the
+     scroll math that must account for it. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  overflow-y: auto;
+}
+
+.thumbnail {
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* A box-shadow ring, not a border: the row height must stay exactly the page
+   height that the virtualization layout was computed from. */
+.thumbnail--active {
+  box-shadow: 0 0 0 2px var(--accent);
 }

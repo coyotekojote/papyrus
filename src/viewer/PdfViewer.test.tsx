@@ -7,16 +7,20 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PageSize, PdfDocumentHandle } from "../pdf";
+import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { PdfViewer } from "./PdfViewer";
 
 const PAGE_COUNT = 8;
 
-function fakeDoc(pageCount = PAGE_COUNT): PdfDocumentHandle {
+function fakeDoc(
+  pageCount = PAGE_COUNT,
+  outline: OutlineNode[] = [],
+): PdfDocumentHandle {
   return {
     pageCount,
     getPageSize: vi.fn(async () => ({ width: 100, height: 140 })),
     renderPage: vi.fn(async () => {}),
+    getOutline: vi.fn(async () => outline),
     destroy: vi.fn(async () => {}),
   };
 }
@@ -57,8 +61,8 @@ async function flushScroll() {
   });
 }
 
-function renderViewer(pageCount = PAGE_COUNT) {
-  const doc = fakeDoc(pageCount);
+function renderViewer(pageCount = PAGE_COUNT, outline: OutlineNode[] = []) {
+  const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
   render(
     <PdfViewer
@@ -246,6 +250,171 @@ describe("PdfViewer", () => {
     // The indicator must follow the real position rather than stay latched.
     await waitFor(() => {
       expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+  });
+
+  describe("table of contents sidebar", () => {
+    const outline: OutlineNode[] = [
+      { title: "序章", pageNumber: 1, children: [] },
+      {
+        title: "本論",
+        pageNumber: 3,
+        children: [{ title: "後半", pageNumber: 6, children: [] }],
+      },
+      { title: "付録", pageNumber: null, children: [] },
+    ];
+
+    async function openSidebar(pageCount = PAGE_COUNT, nodes = outline) {
+      const viewer = renderViewer(pageCount, nodes);
+      await viewer.user.click(screen.getByRole("button", { name: "目次" }));
+      return viewer;
+    }
+
+    it("stays closed until the toolbar button is pressed", () => {
+      const { doc } = renderViewer(PAGE_COUNT, outline);
+
+      expect(screen.queryByRole("list", { name: "目次" })).toBeNull();
+      expect(doc.getOutline).not.toHaveBeenCalled();
+    });
+
+    it("loads and shows the bookmark tree when opened", async () => {
+      const { doc } = await openSidebar();
+
+      expect(doc.getOutline).toHaveBeenCalledOnce();
+      expect(
+        (await screen.findAllByRole("listitem")).map((item) =>
+          item.textContent?.replace(/[▾▸]/g, ""),
+        ),
+      ).toEqual(["序章1", "本論3", "後半6", "付録"]);
+    });
+
+    it("closes again on a second press", async () => {
+      const { user } = await openSidebar();
+      await screen.findByRole("list", { name: "目次" });
+
+      await user.click(screen.getByRole("button", { name: "目次" }));
+
+      expect(screen.queryByRole("list", { name: "目次" })).toBeNull();
+    });
+
+    it("jumps to the page a bookmark points at", async () => {
+      const { user } = await openSidebar();
+      await screen.findByRole("list", { name: "目次" });
+
+      await user.click(screen.getByRole("button", { name: /後半/ }));
+
+      expect(screen.getByText(`6 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("offers no jump for a bookmark whose destination is unresolved", async () => {
+      await openSidebar();
+      await screen.findByRole("list", { name: "目次" });
+
+      expect(screen.getByRole("button", { name: "付録" })).toBeDisabled();
+    });
+
+    it("hides and restores a bookmark's children", async () => {
+      const { user } = await openSidebar();
+      await screen.findByRole("list", { name: "目次" });
+
+      await user.click(
+        screen.getByRole("button", { name: "本論 を折りたたむ" }),
+      );
+      expect(screen.queryByRole("button", { name: /後半/ })).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: "本論 を展開する" }));
+      expect(screen.getByRole("button", { name: /後半/ })).toBeInTheDocument();
+    });
+
+    it("highlights the section the reader is currently in", async () => {
+      const { user } = await openSidebar();
+      await screen.findByRole("list", { name: "目次" });
+
+      const selected = () =>
+        screen
+          .getAllByRole("listitem")
+          .find((item) => item.querySelector('[aria-current="true"]'))
+          ?.textContent?.replace(/[▾▸]/g, "");
+
+      expect(selected()).toBe("序章1");
+
+      // Page 4 is inside 本論 (p3) but before 後半 (p6).
+      await user.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}");
+      expect(screen.getByText(`4 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      expect(selected()).toBe("本論3");
+
+      await user.keyboard("{ArrowRight}{ArrowRight}");
+      expect(selected()).toBe("後半6");
+    });
+
+    it("keeps arrow keys for the sidebar while it has focus", async () => {
+      const { user } = await openSidebar();
+      await screen.findByRole("list", { name: "目次" });
+
+      screen.getByRole("button", { name: /序章/ }).focus();
+      await user.keyboard("{ArrowRight}");
+
+      // The page-turn shortcut must not fire; the reader is still on page 1.
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("trims the surrounding whitespace off a bookmark title", async () => {
+      await openSidebar(PAGE_COUNT, [
+        { title: "  序章  ", pageNumber: 1, children: [] },
+      ]);
+      await screen.findByRole("list", { name: "目次" });
+
+      expect(screen.getByRole("button", { name: "序章 1" })).toHaveTextContent(
+        /^序章1$/,
+      );
+    });
+
+    it("shows a placeholder for a bookmark without a title", async () => {
+      const { user } = await openSidebar(PAGE_COUNT, [
+        {
+          title: "",
+          pageNumber: 2,
+          children: [{ title: "節", pageNumber: 3, children: [] }],
+        },
+      ]);
+      await screen.findByRole("list", { name: "目次" });
+
+      await user.click(screen.getByRole("button", { name: "（無題） 2" }));
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "（無題） を折りたたむ" }),
+      ).toBeInTheDocument();
+    });
+
+    it("falls back to page thumbnails when the document has no bookmarks", async () => {
+      const { user } = await openSidebar(PAGE_COUNT, []);
+
+      const thumbnail = await screen.findByRole("button", { name: "3ページ" });
+      await user.click(thumbnail);
+
+      expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "3ページ" })).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      expect(
+        screen.getByRole("button", { name: "1ページ" }),
+      ).not.toHaveAttribute("aria-current");
+    });
+
+    it("mounts only a few thumbnails of a long document", async () => {
+      await openSidebar(300, []);
+      await screen.findByRole("button", { name: "1ページ" });
+
+      // Every page gets a clickable row, but only a virtualized window of them
+      // is actually handed to the renderer.
+      expect(
+        screen.getAllByRole("button", { name: /^\d+ページ$/ }),
+      ).toHaveLength(300);
+      expect(
+        document.querySelectorAll(".thumbnail .page:not(.page--placeholder)")
+          .length,
+      ).toBeLessThanOrEqual(8);
     });
   });
 });

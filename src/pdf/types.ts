@@ -20,6 +20,20 @@ export interface RenderPageOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * One bookmark of the document outline.
+ *
+ * Destinations are resolved by the renderer, so the rest of the app never sees
+ * an engine-specific destination object. `pageNumber` is null when a bookmark
+ * points somewhere unresolvable (an external URL, or a broken destination).
+ */
+export interface OutlineNode {
+  title: string;
+  /** 1-based page number, or null when the destination could not be resolved. */
+  pageNumber: number | null;
+  children: OutlineNode[];
+}
+
 /** An opened document. Always `destroy()` it when done. */
 export interface PdfDocumentHandle {
   readonly pageCount: number;
@@ -27,6 +41,8 @@ export interface PdfDocumentHandle {
   getPageSize(pageNumber: number): Promise<PageSize>;
   /** 1-based page number. Draws the page into `options.canvas`. */
   renderPage(pageNumber: number, options: RenderPageOptions): Promise<void>;
+  /** Bookmark tree with destinations already resolved. Empty when there is none. */
+  getOutline(): Promise<OutlineNode[]>;
   destroy(): Promise<void>;
 }
 

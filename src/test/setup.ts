@@ -16,3 +16,6 @@ if (!Element.prototype.scrollTo) {
 if (!Element.prototype.scrollBy) {
   Element.prototype.scrollBy = () => {};
 }
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
