@@ -71,6 +71,7 @@ export function PageCanvas({
   // The text layer is cheap relative to the canvas and never cached: it is
   // rebuilt whenever the page mounts or the zoom changes.
   useEffect(() => {
+    if (!withTextLayer) return;
     const container = textLayerRef.current;
     if (!container) return;
 
