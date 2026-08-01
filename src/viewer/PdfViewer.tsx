@@ -123,8 +123,8 @@ export function PdfViewer({
   const [highlightsOpen, setHighlightsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [popup, setPopup] = useState<Popup | null>(null);
-  /** Why the reader's last highlight action did not happen, if it did not. */
-  const [actionError, setActionError] = useState<string | null>(null);
+  /** Set when a highlight could not be created; the reason is derived. */
+  const [createRefused, setCreateRefused] = useState(false);
   /** Set when the notes panel refused an insertion; the reason is derived. */
   const [insertRefused, setInsertRefused] = useState(false);
   /** null until the outline has been fetched; the fetch happens on first open. */
@@ -478,14 +478,12 @@ export function PdfViewer({
       // The hook drops mutations until the sidecar has loaded, so without this
       // the popup would close as if the highlight had been saved.
       if (!annotations.loaded) {
-        setActionError(
-          "注釈をまだ読み込めていないため、ハイライトを保存できません",
-        );
+        setCreateRefused(true);
         setHighlightsOpen(true);
         setPopup(null);
         return;
       }
-      setActionError(null);
+      setCreateRefused(false);
       annotations.addHighlight(
         makeHighlight({
           page: popup.page,
@@ -519,8 +517,13 @@ export function PdfViewer({
     [notes],
   );
 
-  // Derived rather than stored, so the complaint goes away by itself once the
-  // note finishes loading or the reader settles the conflict.
+  // Both complaints below are derived rather than stored, so each goes away by
+  // itself once the state that produced it resolves — a sidecar that finishes
+  // loading, a conflict the reader settles.
+  const actionError =
+    createRefused && !annotations.loaded
+      ? "注釈をまだ読み込めていないため、ハイライトを保存できません"
+      : null;
   const noteError = !insertRefused
     ? null
     : !notes.loaded

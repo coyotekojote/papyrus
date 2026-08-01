@@ -134,6 +134,14 @@ describe("parseMarkdown", () => {
     });
   });
 
+  it("only closes a fence with the marker that opened it", () => {
+    expect(only("```\n~~~\nまだ中\n```")).toEqual({
+      kind: "codeBlock",
+      lang: null,
+      text: "~~~\nまだ中",
+    });
+  });
+
   it("runs an unterminated fence to the end of the note", () => {
     expect(only("```\n書きかけ")).toEqual({
       kind: "codeBlock",
@@ -193,6 +201,14 @@ describe("parseInline", () => {
   it("parses a code span and strips its fence padding", () => {
     expect(parseInline("``a ` b``")).toEqual([{ kind: "code", text: "a ` b" }]);
     expect(parseInline("`` ` ``")).toEqual([{ kind: "code", text: "`" }]);
+  });
+
+  it("does not let a code span swallow a line break", () => {
+    expect(parseInline("`一行目\n二行目`")).toEqual([
+      { kind: "text", text: "`一行目" },
+      { kind: "break" },
+      { kind: "text", text: "二行目`" },
+    ]);
   });
 
   it("does not parse emphasis inside a code span", () => {

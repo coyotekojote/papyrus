@@ -36,8 +36,8 @@ export type Block =
 
 const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
-const FENCE = /^ {0,3}(?:```|~~~)\s*(\S*)\s*$/;
-const FENCE_END = /^ {0,3}(?:```|~~~)\s*$/;
+const FENCE = /^ {0,3}(```|~~~)\s*(\S*)\s*$/;
+const FENCE_END = /^ {0,3}(```|~~~)\s*$/;
 const QUOTE = /^ {0,3}>\s?/;
 const BULLET = /^ {0,3}[-*+]\s+(.*)$/;
 const ORDERED = /^ {0,3}(\d{1,9})[.)]\s+(.*)$/;
@@ -73,7 +73,12 @@ export function parseMarkdown(source: string): Block[] {
     if (fence) {
       const body: string[] = [];
       index += 1;
-      while (index < lines.length && !FENCE_END.test(lines[index])) {
+      // Only the marker that opened the block closes it: a ~~~ line inside a
+      // ``` block is content, not the end of it.
+      while (
+        index < lines.length &&
+        FENCE_END.exec(lines[index])?.[1] !== fence[1]
+      ) {
         body.push(lines[index]);
         index += 1;
       }
@@ -82,7 +87,7 @@ export function parseMarkdown(source: string): Block[] {
       index += 1;
       blocks.push({
         kind: "codeBlock",
-        lang: fence[1] === "" ? null : fence[1],
+        lang: fence[2] === "" ? null : fence[2],
         text: body.join("\n"),
       });
       continue;
@@ -175,7 +180,12 @@ function parseList(
 }
 
 const ESCAPABLE = "\\`*_[]()#+-.!>~";
-const CODE_SPAN = /^(`+)([\s\S]+?)\1(?!`)/;
+/**
+ * Single-line only. CommonMark lets a code span run across a soft line break,
+ * but a newline is a hard break here (see the `break` node), and a span that
+ * swallowed one would silently reflow the note.
+ */
+const CODE_SPAN = /^(`+)([^\n]+?)\1(?!`)/;
 const STRONG = /^(\*\*|__)(?=\S)([\s\S]*?\S)\1/;
 const EM = /^([*_])(?=\S)([\s\S]*?\S)\1/;
 const LINK = /^\[([^\]]*)\]\(\s*([^()\s]*)\s*\)/;
