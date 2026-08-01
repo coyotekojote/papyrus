@@ -31,8 +31,8 @@ function thumbnailScale(size: PageSize): number {
 
 /**
  * Page thumbnails, shown in place of the outline for documents that have no
- * bookmarks. Virtualized vertically so a 500-page document costs the same as a
- * short one.
+ * bookmarks. Every page gets a (cheap) button row, but the canvas renders are
+ * windowed to the visible range, which is where the real cost is.
  */
 export function ThumbnailList({
   doc,

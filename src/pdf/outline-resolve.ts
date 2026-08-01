@@ -60,19 +60,29 @@ async function resolvePageNumber(
   }
 }
 
+export interface ResolveOutlineOptions {
+  /** Destinations resolved in parallel per batch; each is a worker round-trip. */
+  chunkSize?: number;
+  /**
+   * When given, pages outside `[1, pageCount]` resolve to null: a bookmark
+   * pointing past the document must not become an enabled button that cannot
+   * jump anywhere.
+   */
+  pageCount?: number;
+}
+
 /**
  * Converts a pdf.js outline into the engine-agnostic tree, resolving every
  * destination to a page number. Nodes that cannot be resolved are kept with a
  * null `pageNumber` so the tree still reflects the document's structure.
  *
  * Destinations resolve in batches of `chunkSize`, mirroring `loadPageSizes`:
- * each lookup is a worker round-trip, and a huge outline must not fire them
- * all at once.
+ * a huge outline must not fire every lookup at once.
  */
 export async function resolveOutline(
   items: readonly RawOutlineItem[] | null | undefined,
   doc: DestinationLookup,
-  chunkSize = 32,
+  { chunkSize = 32, pageCount }: ResolveOutlineOptions = {},
 ): Promise<OutlineNode[]> {
   if (!Number.isInteger(chunkSize) || chunkSize < 1) {
     throw new RangeError(
@@ -99,7 +109,11 @@ export async function resolveOutline(
   for (let start = 0; start < pending.length; start += chunkSize) {
     await Promise.all(
       pending.slice(start, start + chunkSize).map(async ({ node, dest }) => {
-        node.pageNumber = await resolvePageNumber(dest, doc);
+        const page = await resolvePageNumber(dest, doc);
+        node.pageNumber =
+          page !== null && pageCount !== undefined && page > pageCount
+            ? null
+            : page;
       }),
     );
   }

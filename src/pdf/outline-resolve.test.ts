@@ -176,7 +176,7 @@ describe("resolveOutline", () => {
       dest: [{ num: (i + 1) * 10, gen: 0 }],
     }));
 
-    const outline = await resolveOutline(items, doc, 2);
+    const outline = await resolveOutline(items, doc, { chunkSize: 2 });
 
     expect(maxInFlight).toBeLessThanOrEqual(2);
     expect(outline.map((node) => node.pageNumber)).toEqual([
@@ -185,11 +185,30 @@ describe("resolveOutline", () => {
   });
 
   it("rejects a chunk size that is not a positive integer", async () => {
-    await expect(resolveOutline([{ dest: [0] }], lookup(), 0)).rejects.toThrow(
-      RangeError,
-    );
     await expect(
-      resolveOutline([{ dest: [0] }], lookup(), 1.5),
+      resolveOutline([{ dest: [0] }], lookup(), { chunkSize: 0 }),
     ).rejects.toThrow(RangeError);
+    await expect(
+      resolveOutline([{ dest: [0] }], lookup(), { chunkSize: 1.5 }),
+    ).rejects.toThrow(RangeError);
+  });
+
+  it("nulls a page beyond the document instead of keeping a dead jump target", async () => {
+    const outline = await resolveOutline(
+      [
+        { title: "実在", dest: [4] },
+        { title: "範囲外", dest: [9999] },
+      ],
+      lookup(),
+      { pageCount: 5 },
+    );
+
+    expect(outline.map((node) => node.pageNumber)).toEqual([5, null]);
+  });
+
+  it("keeps any resolved page when no page count is given", async () => {
+    const outline = await resolveOutline([{ dest: [9999] }], lookup());
+
+    expect(outline[0].pageNumber).toBe(10000);
   });
 });

@@ -111,7 +111,9 @@ class PdfJsDocument implements PdfDocumentHandle {
   getOutline(): Promise<OutlineNode[]> {
     this.outline ??= this.doc
       .getOutline()
-      .then((items) => resolveOutline(items, this.doc))
+      .then((items) =>
+        resolveOutline(items, this.doc, { pageCount: this.pageCount }),
+      )
       .catch(() => []);
     return this.outline;
   }
