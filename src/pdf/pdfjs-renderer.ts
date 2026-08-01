@@ -1,5 +1,5 @@
-// Must stay above the pdf.js import: it patches a global pdf.js depends on.
-import "./math-sum-precise-polyfill";
+// Must stay above the pdf.js import: it patches globals pdf.js depends on.
+import "./polyfills";
 
 import {
   GlobalWorkerOptions,

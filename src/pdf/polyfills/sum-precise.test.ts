@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sumPrecise } from "./math-sum-precise";
+import { sumPrecise } from "./sum-precise";
 
 describe("sumPrecise", () => {
   it("sums exact integers", () => {
