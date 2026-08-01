@@ -704,6 +704,44 @@ describe("PdfViewer", () => {
       ).toBeNull();
     });
 
+    it("forgets a gesture that was released away from the pages", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // A drag that starts on the page and ends somewhere else entirely: the
+      // scroller never sees the release.
+      fireEvent(
+        page,
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: 400,
+          clientY: 400,
+        }),
+      );
+      fireEvent(window, new MouseEvent("pointerup", { clientX: 900 }));
+
+      // The next click is its own gesture and must not be measured against
+      // where that abandoned drag began.
+      fireEvent(
+        page,
+        new MouseEvent("pointerup", {
+          bubbles: true,
+          clientX: 20,
+          clientY: 30,
+        }),
+      );
+
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+    });
+
     it("closes the panel on a second press", async () => {
       const { user } = await openPanel();
       await screen.findByText(/テキストを選択して色を選ぶ/);

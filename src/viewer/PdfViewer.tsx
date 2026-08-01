@@ -355,11 +355,25 @@ export function PdfViewer({
       setPopup(null);
     };
 
+    /**
+     * A gesture that ends anywhere else — released over the sidebar, or off
+     * the window entirely — never reaches the scroller's own pointerup. Left
+     * behind, its start would be measured against the next release and turn a
+     * genuine click into a "drag". These fire after React's handler has run.
+     */
+    const forgetPointerDown = () => {
+      pointerDownRef.current = null;
+    };
+
     scroller.addEventListener("wheel", onWheel, { passive: false });
     scroller.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointerup", forgetPointerDown);
+    window.addEventListener("pointercancel", forgetPointerDown);
     return () => {
       scroller.removeEventListener("wheel", onWheel);
       scroller.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", forgetPointerDown);
+      window.removeEventListener("pointercancel", forgetPointerDown);
     };
   }, [cancelPendingScroll]);
 
