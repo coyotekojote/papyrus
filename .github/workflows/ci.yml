@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend (lint / format / test / build)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test
+        run: npm run test -- --run
+
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: Rust (fmt / clippy / test)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: rustfmt check
+        working-directory: src-tauri
+        run: mise exec -- cargo fmt --check
+
+      - name: clippy
+        working-directory: src-tauri
+        run: mise exec -- cargo clippy -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: mise exec -- cargo test
+
+  tauri-build:
+    name: Tauri build (no bundle)
+    runs-on: macos-latest
+    needs: [frontend, rust]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: jdx/mise-action@v2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Tauri build (no bundle)
+        run: mise exec -- npx tauri build --no-bundle --debug
