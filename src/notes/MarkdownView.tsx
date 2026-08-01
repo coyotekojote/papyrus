@@ -46,10 +46,15 @@ function renderInline(nodes: readonly Inline[]): ReactNode {
   });
 }
 
+/** The only tags a heading may render as; `level` is used to index this. */
+const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
+
 function renderBlock(block: Block, key: number): ReactNode {
   switch (block.kind) {
     case "heading": {
-      const Heading = `h${block.level}` as "h1";
+      // A level outside 1–6 cannot come out of the parser, but it must not
+      // render an undefined tag if one ever does.
+      const Heading = HEADING_TAGS[block.level - 1] ?? "p";
       return <Heading key={key}>{renderInline(block.children)}</Heading>;
     }
     case "paragraph":

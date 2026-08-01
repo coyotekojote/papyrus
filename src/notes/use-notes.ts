@@ -21,8 +21,12 @@ import { appendQuote, formatHighlightQuote } from "../viewer/highlights";
 /** How long typing has to pause before the note is written. */
 export const SAVE_DEBOUNCE_MS = 800;
 
-/** A conflicting save is retried this many times before giving up. */
-const MAX_SAVE_ATTEMPTS = 3;
+/**
+ * How many conflicts in a row a save may hit before giving up. Counted
+ * consecutively: a save that succeeds resets it, so a long editing session
+ * that keeps racing an external writer is never cut off by a running total.
+ */
+const MAX_CONSECUTIVE_CONFLICTS = 3;
 
 export type NotesStatus =
   "loading" | "saved" | "unsaved" | "saving" | "conflict" | "error";
@@ -95,9 +99,7 @@ export function useNotes(pdfPath: string): UseNotesResult {
 
   const save = useCallback(
     async (session: Session) => {
-      // Counts conflicts only; a successful save resets it, so a reader typing
-      // through a slow save never trips the give-up path.
-      let attempts = 0;
+      let conflicts = 0;
       while (session.loaded && !session.conflict) {
         const next = session.content;
         if (next === session.persisted.content) {
@@ -112,7 +114,7 @@ export function useNotes(pdfPath: string): UseNotesResult {
             session.persisted.modifiedAtMs,
           );
           session.persisted = { content: next, modifiedAtMs };
-          attempts = 0;
+          conflicts = 0;
           continue;
         } catch (cause) {
           if (!(cause instanceof SidecarConflictError)) {
@@ -122,8 +124,8 @@ export function useNotes(pdfPath: string): UseNotesResult {
             }
             return;
           }
-          attempts += 1;
-          if (attempts >= MAX_SAVE_ATTEMPTS) {
+          conflicts += 1;
+          if (conflicts >= MAX_CONSECUTIVE_CONFLICTS) {
             if (isCurrent(session)) {
               setError(
                 "メモを保存できませんでした（ファイルが変更され続けています）",
