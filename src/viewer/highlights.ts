@@ -1,18 +1,11 @@
 import type { Annotations, Highlight, NormalizedRect } from "../files/sidecar";
+import { clampUnit, round, type RectLike } from "./normalize";
 
 /**
  * Pure logic for text highlights (issue #6): turning a DOM selection into
  * normalized page rects, mutating the annotations document, hit-testing
  * clicks, and formatting a highlight as a markdown quote for notes.md.
  */
-
-/** Subset of DOMRect the math needs, so tests can use plain objects. */
-export interface RectLike {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
 
 export interface HighlightColor {
   id: string;
@@ -40,14 +33,6 @@ const MIN_RECT_SIZE = 0.001;
 const SAME_LINE_OVERLAP = 0.5;
 /** Horizontal gaps wider than this (normalized) split a line, e.g. column gutters. */
 const MERGE_GAP = 0.01;
-
-function clampUnit(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
-
-function round(value: number): number {
-  return Math.round(value * 10000) / 10000;
-}
 
 /**
  * Converts selection client rects into page-normalized rects: clips them to
@@ -231,10 +216,4 @@ export function formatHighlightQuote(highlight: Highlight): string {
     .map((line) => (line === "" ? ">" : `> ${line}`))
     .join("\n");
   return `${quoted}\n>\n> — p.${highlight.page}`;
-}
-
-/** Appends a quote block, keeping exactly one blank line between entries. */
-export function appendQuote(notes: string, quote: string): string {
-  const trimmed = notes.replace(/\s+$/, "");
-  return trimmed === "" ? `${quote}\n` : `${trimmed}\n\n${quote}\n`;
 }

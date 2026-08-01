@@ -6,7 +6,12 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import type { Highlight, NormalizedRect } from "../files/sidecar";
+import { blobToBase64 } from "../files/base64";
+import {
+  saveClip,
+  type Highlight,
+  type NormalizedRect,
+} from "../files/sidecar";
 import { NotesPanel } from "../notes/NotesPanel";
 import { useNotes } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
@@ -20,10 +25,17 @@ import {
 } from "./SelectionPopup";
 import { ThumbnailList } from "./ThumbnailList";
 import {
+  makeClip,
+  marqueeBox,
+  normalizeDragRect,
+  type DragPoint,
+} from "./clips";
+import {
   highlightAtPoint,
   makeHighlight,
   normalizeSelectionRects,
 } from "./highlights";
+import type { RectLike } from "./normalize";
 import { useAnnotations } from "./use-annotations";
 import {
   PAGE_GAP,
@@ -91,6 +103,20 @@ type Popup =
     }
   | { kind: "actions"; highlight: Highlight; position: PopupPosition };
 
+/**
+ * A rectangle selection in progress. The page and the mount point are measured
+ * once, when the drag starts: they cannot move under it, and re-measuring on
+ * every pointer move would make the marquee lag the cursor.
+ */
+interface ClipDrag {
+  page: number;
+  pageRect: RectLike;
+  /** Top-left of `.viewer__body`, which the marquee is positioned inside. */
+  origin: DragPoint;
+  start: DragPoint;
+  current: DragPoint;
+}
+
 /** The page element (carrying `data-page`) around a DOM node, if any. */
 function closestPage(node: Node | null): HTMLElement | null {
   const element =
@@ -123,6 +149,12 @@ export function PdfViewer({
   const [highlightsOpen, setHighlightsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [popup, setPopup] = useState<Popup | null>(null);
+  /** Rectangle selection: on, the pages are dragged over instead of read. */
+  const [clipMode, setClipMode] = useState(false);
+  const [drag, setDrag] = useState<ClipDrag | null>(null);
+  /** True while a region is being rendered and written to the sidecar. */
+  const [clipping, setClipping] = useState(false);
+  const [clipError, setClipError] = useState<string | null>(null);
   /** Set when a highlight could not be created; the reason is derived. */
   const [createRefused, setCreateRefused] = useState(false);
   /** Set when the notes panel refused an insertion; the reason is derived. */
@@ -146,6 +178,11 @@ export function PdfViewer({
   const bodyRef = useRef<HTMLDivElement>(null);
   /** Where the current gesture started, for telling a click from a drag. */
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  /** The live drag, for the window listeners that must not re-register on move. */
+  const dragRef = useRef<ClipDrag | null>(null);
+  dragRef.current = drag;
+  /** Aborts an in-flight region render when the reader leaves the document. */
+  const clipAbortRef = useRef<AbortController | null>(null);
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -500,22 +537,152 @@ export function PdfViewer({
   );
 
   /**
-   * Quotes go through the open editor rather than straight to notes.md: a
-   * direct write would be overwritten by the panel's next autosave, and the
-   * reader would watch the quote disappear.
+   * Everything the app adds to notes.md goes through the open editor rather
+   * than straight to the file: a direct write would be overwritten by the
+   * panel's next autosave, and the reader would watch it disappear.
    */
-  const insertToNotes = useCallback(
-    (highlight: Highlight) => {
+  const appendToNotes = useCallback(
+    (append: () => void) => {
       setNotesOpen(true);
       if (!notes.loaded || notes.conflict !== null) {
         setInsertRefused(true);
         return;
       }
       setInsertRefused(false);
-      notes.insertQuote(highlight);
+      append();
     },
     [notes],
   );
+
+  const insertToNotes = useCallback(
+    (highlight: Highlight) => appendToNotes(() => notes.insertQuote(highlight)),
+    [appendToNotes, notes],
+  );
+
+  /**
+   * Cuts the selected region out of the page: renders it well above screen
+   * resolution, writes it into the sidecar's `clips/` folder, records it in
+   * annotations.json, and drops the markdown image into the note.
+   *
+   * The clip file is written before the annotation, so a failure anywhere
+   * leaves at worst an orphaned PNG — never an annotations entry (or a note)
+   * pointing at a picture that is not there.
+   */
+  const createClip = useCallback(
+    async (page: number, rect: NormalizedRect) => {
+      // The annotations hook drops mutations until the sidecar has loaded;
+      // without this the clip would be cut and then quietly forgotten.
+      if (!annotations.loaded) {
+        setClipError(
+          "注釈をまだ読み込めていないため、切り取りを保存できません",
+        );
+        return;
+      }
+      const controller = new AbortController();
+      clipAbortRef.current?.abort();
+      clipAbortRef.current = controller;
+      setClipping(true);
+      setClipError(null);
+      try {
+        const png = await doc.renderRegion(page, {
+          rect,
+          signal: controller.signal,
+        });
+        const file = await saveClip(filePath, await blobToBase64(png));
+        if (controller.signal.aborted) return;
+        const clip = makeClip({ page, rect, file, createdAt: new Date() });
+        annotations.addClip(clip);
+        appendToNotes(() => notes.insertImage(clip));
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        setClipError(cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        if (clipAbortRef.current === controller) {
+          clipAbortRef.current = null;
+          setClipping(false);
+        }
+      }
+    },
+    [annotations, appendToNotes, doc, filePath, notes],
+  );
+
+  const beginClipDrag = useCallback((event: ReactPointerEvent) => {
+    const pageElement = closestPage(
+      event.target instanceof Node ? event.target : null,
+    );
+    const bodyRect = bodyRef.current?.getBoundingClientRect();
+    if (!pageElement || !bodyRect) return;
+    const pageRect = pageElement.getBoundingClientRect();
+    if (pageRect.width <= 0 || pageRect.height <= 0) return;
+    // Without this the drag would also select the text layer underneath, and
+    // release would leave the highlight popup behind.
+    event.preventDefault();
+
+    const point = { x: event.clientX, y: event.clientY };
+    setClipError(null);
+    setDrag({
+      page: Number(pageElement.dataset.page),
+      pageRect,
+      origin: { x: bodyRect.left, y: bodyRect.top },
+      start: point,
+      current: point,
+    });
+  }, []);
+
+  // Tracked on the window rather than the scroller: a drag that leaves the
+  // pages — over a panel, or off the window — still has to finish where the
+  // reader let go, not wherever it last crossed a page.
+  useEffect(() => {
+    if (drag === null) return;
+    const onMove = (event: PointerEvent) => {
+      setDrag((current) =>
+        current === null
+          ? null
+          : { ...current, current: { x: event.clientX, y: event.clientY } },
+      );
+    };
+    const onUp = (event: PointerEvent) => {
+      const finished = dragRef.current;
+      setDrag(null);
+      if (!finished) return;
+      const rect = normalizeDragRect(
+        finished.start,
+        { x: event.clientX, y: event.clientY },
+        finished.pageRect,
+      );
+      // Too small to be a region: treated as a stray click, silently.
+      if (rect) void createClip(finished.page, rect);
+    };
+    const onCancel = () => setDrag(null);
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    // Only whether a drag is running matters here; its position is read from
+    // the ref, so a re-registration per pointer move is avoided.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag === null, createClip]);
+
+  // Escape backs out one step: the drag in progress, then the mode itself.
+  useEffect(() => {
+    if (!clipMode) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (dragRef.current) setDrag(null);
+      else setClipMode(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [clipMode]);
+
+  // A render still running when the reader closes the document has nowhere to
+  // put its result.
+  useEffect(() => () => clipAbortRef.current?.abort(), []);
 
   // Both complaints below are derived rather than stored, so each goes away by
   // itself once the state that produced it resolves — a sidecar that finishes
@@ -567,6 +734,18 @@ export function PdfViewer({
           onClick={() => setNotesOpen((open) => !open)}
         >
           メモ
+        </button>
+        <button
+          type="button"
+          className="toolbar__button"
+          aria-pressed={clipMode}
+          onClick={() => {
+            setDrag(null);
+            setClipError(null);
+            setClipMode((on) => !on);
+          }}
+        >
+          切り取り
         </button>
         <span className="toolbar__title" title={fileName}>
           {fileName}
@@ -679,10 +858,11 @@ export function PdfViewer({
         ) : null}
 
         <div
-          className="scroller"
+          className={clipMode ? "scroller scroller--clipping" : "scroller"}
           ref={scrollerRef}
           onScroll={handleScroll}
-          onPointerUp={handlePointerUp}
+          onPointerDown={clipMode ? beginClipDrag : undefined}
+          onPointerUp={clipMode ? undefined : handlePointerUp}
           tabIndex={0}
           role="region"
           aria-label="PDFページ"
@@ -784,6 +964,8 @@ export function PdfViewer({
             }}
           >
             <NotesPanel
+              pdfPath={filePath}
+              clips={annotations.annotations.clips}
               content={notes.content}
               loaded={notes.loaded}
               status={notes.status}
@@ -794,6 +976,33 @@ export function PdfViewer({
               onTakeDisk={notes.takeDisk}
             />
           </aside>
+        ) : null}
+
+        {drag ? (
+          <div
+            className="clip-marquee"
+            aria-hidden="true"
+            style={marqueeBox(
+              drag.start,
+              drag.current,
+              drag.pageRect,
+              drag.origin,
+            )}
+          />
+        ) : null}
+
+        {clipMode || clipError ? (
+          <p
+            className={
+              clipError ? "clip-notice clip-notice--error" : "clip-notice"
+            }
+            role={clipError ? "alert" : "status"}
+          >
+            {clipError ??
+              (clipping
+                ? "切り取っています…"
+                : "切り取る範囲をドラッグしてください（Esc で終了）")}
+          </p>
         ) : null}
 
         {popup?.kind === "create" ? (

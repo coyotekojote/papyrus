@@ -150,6 +150,28 @@ export function saveNotes(
   return invokeSidecar("save_notes", { pdfPath, content, baseModifiedAtMs });
 }
 
+/**
+ * Writes a clipped figure into the sidecar's `clips/` folder and resolves to
+ * its path relative to that folder, as `annotations.json` and the note's
+ * `![](...)` both record it. The backend picks the name, so clips need none of
+ * the mtime handshake the two shared files do — a clip is only ever created.
+ *
+ * The PNG goes over as base64: Tauri carries command arguments as JSON, where
+ * a byte array would become one number per byte.
+ */
+export function saveClip(pdfPath: string, pngBase64: string): Promise<string> {
+  return invokeSidecar("save_clip", { pdfPath, pngBase64 });
+}
+
+/**
+ * Reads a clip back, for showing it in the notes preview. `file` is a path
+ * relative to the sidecar folder; the backend refuses anything pointing out
+ * of it.
+ */
+export function loadClip(pdfPath: string, file: string): Promise<ArrayBuffer> {
+  return invokeSidecar("load_clip", { pdfPath, file });
+}
+
 export function sidecarStatus(pdfPath: string): Promise<SidecarStatus> {
   return invokeSidecar("sidecar_status", { pdfPath });
 }

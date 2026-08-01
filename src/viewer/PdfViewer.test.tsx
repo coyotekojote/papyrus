@@ -12,6 +12,7 @@ import {
   loadAnnotations,
   loadNotes,
   saveAnnotations,
+  saveClip,
   saveNotes,
   type Annotations,
   type Highlight,
@@ -28,6 +29,8 @@ vi.mock("../files/sidecar", async (importActual) => {
     saveAnnotations: vi.fn(),
     loadNotes: vi.fn(),
     saveNotes: vi.fn(),
+    saveClip: vi.fn(),
+    loadClip: vi.fn(),
   };
 });
 
@@ -41,6 +44,7 @@ function fakeDoc(
     pageCount,
     getPageSize: vi.fn(async () => ({ width: 100, height: 140 })),
     renderPage: vi.fn(async () => {}),
+    renderRegion: vi.fn(async () => new Blob([new Uint8Array([1, 2, 3])])),
     renderTextLayer: vi.fn(async () => {}),
     getOutline: vi.fn(async () => outline),
     destroy: vi.fn(async () => {}),
@@ -67,6 +71,7 @@ function mockSidecar(annotations: Annotations = emptyAnnotations()) {
   vi.mocked(saveAnnotations).mockResolvedValue(2);
   vi.mocked(loadNotes).mockResolvedValue({ content: "", modifiedAtMs: null });
   vi.mocked(saveNotes).mockResolvedValue(3);
+  vi.mocked(saveClip).mockResolvedValue("clips/clip-0001.png");
 }
 
 beforeEach(() => {
@@ -74,6 +79,7 @@ beforeEach(() => {
   vi.mocked(saveAnnotations).mockReset();
   vi.mocked(loadNotes).mockReset();
   vi.mocked(saveNotes).mockReset();
+  vi.mocked(saveClip).mockReset();
   mockSidecar();
 });
 
@@ -937,6 +943,177 @@ describe("PdfViewer", () => {
       await user.click(screen.getByRole("button", { name: "ハイライト" }));
 
       expect(screen.queryByText(/テキストを選択して色を選ぶ/)).toBeNull();
+    });
+  });
+
+  describe("clips", () => {
+    /** Turns on the rectangle mode and hands back page 1, sized 100x140. */
+    async function startClipping() {
+      const { doc, user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "切り取り" }));
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      return { doc, page, user };
+    }
+
+    /**
+     * A drag over the page. Press and release are separate events because the
+     * viewer follows the release on the window, not on the page it started on;
+     * the whole gesture runs inside act so the cut it kicks off settles too.
+     */
+    async function drag(
+      page: HTMLElement,
+      from: { x: number; y: number },
+      to: { x: number; y: number },
+    ) {
+      // Each of the first two events has to settle on its own: the window
+      // listeners that follow the drag are mounted by an effect the press
+      // schedules, and would not be there yet inside one act block.
+      fireEvent(
+        page,
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: from.x,
+          clientY: from.y,
+        }),
+      );
+      fireEvent(
+        window,
+        new MouseEvent("pointermove", { clientX: to.x, clientY: to.y }),
+      );
+      await act(async () => {
+        fireEvent(
+          window,
+          new MouseEvent("pointerup", { clientX: to.x, clientY: to.y }),
+        );
+      });
+    }
+
+    it("cuts the dragged region and writes it to the sidecar", async () => {
+      const { doc, page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      await waitFor(() => expect(saveClip).toHaveBeenCalledTimes(1));
+      expect(doc.renderRegion).toHaveBeenCalledWith(1, {
+        rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+        signal: expect.any(AbortSignal),
+      });
+      expect(vi.mocked(saveClip).mock.calls[0][0]).toBe("/papers/paper.pdf");
+    });
+
+    it("records the clip in annotations.json", async () => {
+      const { page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      await waitFor(() => expect(saveAnnotations).toHaveBeenCalled());
+      const saved = vi.mocked(saveAnnotations).mock.calls.at(-1)?.[1];
+      expect(saved?.clips).toEqual([
+        {
+          id: expect.any(String),
+          page: 1,
+          rect: { x: 0.1, y: 0.1, w: 0.5, h: 0.5 },
+          file: "clips/clip-0001.png",
+          createdAt: expect.any(String),
+        },
+      ]);
+    });
+
+    it("inserts the clip into the note as a markdown image", async () => {
+      const { page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      const editor = await screen.findByLabelText("メモ (markdown)");
+      await waitFor(() =>
+        expect(editor).toHaveValue("![p.1 の図](clips/clip-0001.png)\n"),
+      );
+    });
+
+    it("ignores a drag too small to be a region", async () => {
+      const { doc, page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 10.5, y: 14.5 });
+
+      expect(doc.renderRegion).not.toHaveBeenCalled();
+      expect(saveClip).not.toHaveBeenCalled();
+    });
+
+    it("does not cut anything while the mode is off", async () => {
+      const { doc } = renderViewer();
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      expect(doc.renderRegion).not.toHaveBeenCalled();
+    });
+
+    it("backs out of the drag first and the mode second on Escape", async () => {
+      const { doc, page } = await startClipping();
+      fireEvent(
+        page,
+        new MouseEvent("pointerdown", {
+          bubbles: true,
+          clientX: 10,
+          clientY: 14,
+        }),
+      );
+      fireEvent(
+        window,
+        new MouseEvent("pointermove", { clientX: 60, clientY: 84 }),
+      );
+      expect(document.querySelector(".clip-marquee")).not.toBeNull();
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(document.querySelector(".clip-marquee")).toBeNull();
+      expect(screen.getByRole("button", { name: "切り取り" })).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.getByRole("button", { name: "切り取り" })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+      // The release that follows the cancelled drag cuts nothing.
+      fireEvent(
+        window,
+        new MouseEvent("pointerup", { clientX: 60, clientY: 84 }),
+      );
+      expect(doc.renderRegion).not.toHaveBeenCalled();
+    });
+
+    it("reports a failed cut instead of leaving the reader waiting", async () => {
+      vi.mocked(saveClip).mockRejectedValue(
+        new Error("Sidecar io: 書けません"),
+      );
+      const { page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Sidecar io: 書けません",
+      );
+      expect(saveAnnotations).not.toHaveBeenCalled();
+    });
+
+    it("refuses to cut before the annotations have loaded", async () => {
+      vi.mocked(loadAnnotations).mockRejectedValue(new Error("読めません"));
+      const { doc, page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "注釈をまだ読み込めていないため、切り取りを保存できません",
+      );
+      expect(doc.renderRegion).not.toHaveBeenCalled();
     });
   });
 

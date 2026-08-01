@@ -3,9 +3,12 @@ import {
   SidecarConflictError,
   loadNotes,
   saveNotes,
+  type Clip,
   type Highlight,
 } from "../files/sidecar";
-import { appendQuote, formatHighlightQuote } from "../viewer/highlights";
+import { formatClipImage } from "../viewer/clips";
+import { formatHighlightQuote } from "../viewer/highlights";
+import { appendBlock } from "./markdown";
 
 /**
  * notes.md for one PDF (issue #7): loads it, autosaves the editor's content
@@ -43,6 +46,8 @@ export interface UseNotesResult {
   setContent(next: string): void;
   /** Appends a highlight to the note as a markdown quote, with its page. */
   insertQuote(highlight: Highlight): void;
+  /** Appends a clip to the note as a markdown image, relative to the sidecar. */
+  insertImage(clip: Clip): void;
   /** Conflict resolution: overwrite the file with what is in the editor. */
   keepLocal(): void;
   /** Conflict resolution: take the file's content, dropping local edits. */
@@ -258,8 +263,13 @@ export function useNotes(pdfPath: string): UseNotesResult {
     insertQuote: useCallback(
       (highlight: Highlight) =>
         edit((current) =>
-          appendQuote(current, formatHighlightQuote(highlight)),
+          appendBlock(current, formatHighlightQuote(highlight)),
         ),
+      [edit],
+    ),
+    insertImage: useCallback(
+      (clip: Clip) =>
+        edit((current) => appendBlock(current, formatClipImage(clip))),
       [edit],
     ),
     keepLocal: useCallback(() => {

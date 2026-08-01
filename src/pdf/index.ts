@@ -3,7 +3,9 @@ export type {
   PageSize,
   PdfDocumentHandle,
   PdfRenderer,
+  RegionRect,
   RenderPageOptions,
+  RenderRegionOptions,
   RenderTextLayerOptions,
 } from "./types";
 export { PdfPageOutOfRangeError } from "./types";

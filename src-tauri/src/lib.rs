@@ -25,6 +25,8 @@ pub fn run() {
             sidecar::save_annotations,
             sidecar::load_notes,
             sidecar::save_notes,
+            sidecar::save_clip,
+            sidecar::load_clip,
             sidecar::sidecar_status,
         ])
         .run(tauri::generate_context!())

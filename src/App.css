@@ -353,6 +353,44 @@ body {
   border-radius: 2px;
 }
 
+/* ---------- clips ---------- */
+
+.scroller--clipping {
+  cursor: crosshair;
+  /* The drag draws a rectangle; it must not also select the text layer. */
+  user-select: none;
+  /* Panning would fight the selection on a touch screen. */
+  touch-action: none;
+}
+
+.clip-marquee {
+  position: absolute;
+  z-index: 9;
+  border: 1px solid var(--accent);
+  background: rgb(76 141 255 / 20%);
+  pointer-events: none;
+}
+
+.clip-notice {
+  position: absolute;
+  z-index: 10;
+  bottom: 0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 45%);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.clip-notice--error {
+  color: #ff8080;
+}
+
 .popup {
   position: absolute;
   z-index: 10;

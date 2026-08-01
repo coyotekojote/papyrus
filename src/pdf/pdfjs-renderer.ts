@@ -19,6 +19,7 @@ import workerUrl from "./pdf-worker?worker&url";
 
 import { backingStoreRatio } from "./canvas-scale";
 import { resolveOutline } from "./outline-resolve";
+import { clampRegion } from "./region";
 import {
   PdfPageOutOfRangeError,
   type OutlineNode,
@@ -26,13 +27,46 @@ import {
   type PdfDocumentHandle,
   type PdfRenderer,
   type RenderPageOptions,
+  type RenderRegionOptions,
   type RenderTextLayerOptions,
 } from "./types";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
+/**
+ * Resolution a clipped region is rendered at, as a multiple of the page's
+ * natural size. Clips are meant to survive being looked at outside the app —
+ * in a note, on another device's screen — so they are cut at more than the
+ * viewer itself ever shows. `backingStoreRatio` caps it when the region is
+ * large enough that the canvas would stop being paintable.
+ */
+const CLIP_SCALE = 3;
+
 function devicePixelRatio(): number {
   return typeof window === "undefined" ? 1 : (window.devicePixelRatio ?? 1);
+}
+
+/**
+ * Unlike a page render — where an abort just leaves a canvas nobody looks at —
+ * a clip has to resolve to an image or not at all, so an abandoned one fails
+ * loudly instead of handing back a half-painted picture.
+ */
+function throwIfAborted(
+  signal: AbortSignal | undefined,
+  destroyed: boolean,
+): void {
+  if (signal?.aborted || destroyed) {
+    throw new Error("The region render was cancelled");
+  }
+}
+
+function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Failed to encode the region as PNG"));
+    }, "image/png");
+  });
 }
 
 class PdfJsDocument implements PdfDocumentHandle {
@@ -110,6 +144,57 @@ class PdfJsDocument implements PdfDocumentHandle {
     } finally {
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  async renderRegion(
+    pageNumber: number,
+    { rect, signal }: RenderRegionOptions,
+  ): Promise<Blob> {
+    const page = await this.page(pageNumber);
+    throwIfAborted(signal, this.destroyed);
+
+    const natural = page.getViewport({ scale: 1 });
+    const region = clampRegion(rect);
+    const regionWidth = region.w * natural.width;
+    const regionHeight = region.h * natural.height;
+    if (regionWidth <= 0 || regionHeight <= 0) {
+      throw new Error("Cannot render an empty region");
+    }
+
+    const scale = backingStoreRatio(regionWidth, regionHeight, CLIP_SCALE);
+    // Offsetting the viewport shifts the region's top-left onto the canvas
+    // origin, so only that part of the page is ever painted — rendering the
+    // whole page and cropping afterwards would cost the full page's pixels.
+    const viewport = page.getViewport({
+      scale,
+      offsetX: -region.x * natural.width * scale,
+      offsetY: -region.y * natural.height * scale,
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(regionWidth * scale));
+    canvas.height = Math.max(1, Math.round(regionHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Failed to acquire a 2d canvas context");
+    // PDF pages have no background of their own; without this the clip would
+    // be transparent wherever the page is blank.
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    const task: RenderTask = page.render({
+      canvas,
+      canvasContext: context,
+      viewport,
+    });
+    const onAbort = () => task.cancel();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      await task.promise;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
+    throwIfAborted(signal, this.destroyed);
+    return canvasToPng(canvas);
   }
 
   async renderTextLayer(

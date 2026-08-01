@@ -5,8 +5,10 @@ import {
   loadAnnotations,
   saveAnnotations,
   type Annotations,
+  type Clip,
   type Highlight,
 } from "../files/sidecar";
+import { addClip } from "./clips";
 import { addHighlight, removeHighlight } from "./highlights";
 
 type Mutation = (annotations: Annotations) => Annotations;
@@ -26,6 +28,7 @@ export interface UseAnnotationsResult {
   error: string | null;
   addHighlight(highlight: Highlight): void;
   removeHighlight(id: string): void;
+  addClip(clip: Clip): void;
 }
 
 /**
@@ -191,6 +194,10 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
     ),
     removeHighlight: useCallback(
       (id: string) => mutate((current) => removeHighlight(current, id)),
+      [mutate],
+    ),
+    addClip: useCallback(
+      (clip: Clip) => mutate((current) => addClip(current, clip)),
       [mutate],
     ),
   };
