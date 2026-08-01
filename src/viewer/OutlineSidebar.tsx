@@ -43,49 +43,54 @@ export function OutlineSidebar({
 
   return (
     <ul className="outline" role="tree" aria-label="目次">
-      {rows.map((row) => (
-        <li
-          key={row.id}
-          className="outline__row"
-          role="treeitem"
-          aria-level={row.depth + 1}
-          aria-selected={row.id === activeId}
-          aria-expanded={row.hasChildren ? row.expanded : undefined}
-          ref={row.id === activeId ? activeRef : undefined}
-        >
-          <span
-            className="outline__indent"
-            style={{ width: `${row.depth * 0.85}rem` }}
-          />
-          {row.hasChildren ? (
+      {rows.map((row) => {
+        // A bookmark may carry no title at all; an empty label would make the
+        // row invisible and its buttons unnameable for assistive tech.
+        const title = row.title.trim() === "" ? "（無題）" : row.title;
+        return (
+          <li
+            key={row.id}
+            className="outline__row"
+            role="treeitem"
+            aria-level={row.depth + 1}
+            aria-selected={row.id === activeId}
+            aria-expanded={row.hasChildren ? row.expanded : undefined}
+            ref={row.id === activeId ? activeRef : undefined}
+          >
+            <span
+              className="outline__indent"
+              style={{ width: `${row.depth * 0.85}rem` }}
+            />
+            {row.hasChildren ? (
+              <button
+                type="button"
+                className="outline__twisty"
+                onClick={() => toggle(row.id)}
+                aria-label={`${title} を${row.expanded ? "折りたたむ" : "展開する"}`}
+              >
+                {row.expanded ? "▾" : "▸"}
+              </button>
+            ) : (
+              <span className="outline__twisty outline__twisty--empty" />
+            )}
             <button
               type="button"
-              className="outline__twisty"
-              onClick={() => toggle(row.id)}
-              aria-label={`${row.title} を${row.expanded ? "折りたたむ" : "展開する"}`}
+              className="outline__link"
+              // A bookmark whose destination could not be resolved has nowhere
+              // to jump to, but still belongs in the tree as a heading.
+              disabled={row.pageNumber === null}
+              onClick={() => {
+                if (row.pageNumber !== null) onJumpToPage(row.pageNumber);
+              }}
             >
-              {row.expanded ? "▾" : "▸"}
+              <span className="outline__title">{title}</span>
+              {row.pageNumber !== null ? (
+                <span className="outline__page">{row.pageNumber}</span>
+              ) : null}
             </button>
-          ) : (
-            <span className="outline__twisty outline__twisty--empty" />
-          )}
-          <button
-            type="button"
-            className="outline__link"
-            // A bookmark whose destination could not be resolved has nowhere
-            // to jump to, but still belongs in the tree as a heading.
-            disabled={row.pageNumber === null}
-            onClick={() => {
-              if (row.pageNumber !== null) onJumpToPage(row.pageNumber);
-            }}
-          >
-            <span className="outline__title">{row.title}</span>
-            {row.pageNumber !== null ? (
-              <span className="outline__page">{row.pageNumber}</span>
-            ) : null}
-          </button>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ul>
   );
 }

@@ -386,12 +386,14 @@ body {
 .thumbnail {
   flex: 0 0 auto;
   padding: 0;
-  border: 2px solid transparent;
+  border: none;
   border-radius: 4px;
   background: transparent;
   cursor: pointer;
 }
 
+/* A box-shadow ring, not a border: the row height must stay exactly the page
+   height that the virtualization layout was computed from. */
 .thumbnail--active {
-  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
 }

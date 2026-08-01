@@ -137,6 +137,22 @@ describe("resolveOutline", () => {
     expect(outline.map((node) => node.pageNumber)).toEqual([null, null]);
   });
 
+  it("rejects a negative or fractional index coming back from getPageIndex", async () => {
+    const doc = lookup({
+      getPageIndex: vi.fn(async (ref) => (ref.num === 10 ? -1 : 0.5)),
+    });
+
+    const outline = await resolveOutline(
+      [
+        { title: "負の参照", dest: [{ num: 10, gen: 0 }] },
+        { title: "小数の参照", dest: [{ num: 20, gen: 0 }] },
+      ],
+      doc,
+    );
+
+    expect(outline.map((node) => node.pageNumber)).toEqual([null, null]);
+  });
+
   it("falls back to an empty title when the bookmark has none", async () => {
     const outline = await resolveOutline([{ dest: [0] }], lookup());
 

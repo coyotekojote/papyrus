@@ -347,6 +347,23 @@ describe("PdfViewer", () => {
       expect(selected()).toBe("後半6");
     });
 
+    it("shows a placeholder for a bookmark without a title", async () => {
+      const { user } = await openSidebar(PAGE_COUNT, [
+        {
+          title: "",
+          pageNumber: 2,
+          children: [{ title: "節", pageNumber: 3, children: [] }],
+        },
+      ]);
+      await screen.findByRole("tree");
+
+      await user.click(screen.getByRole("button", { name: "（無題） 2" }));
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "（無題） を折りたたむ" }),
+      ).toBeInTheDocument();
+    });
+
     it("falls back to page thumbnails when the document has no bookmarks", async () => {
       const { user } = await openSidebar(PAGE_COUNT, []);
 

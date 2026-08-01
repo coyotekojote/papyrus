@@ -47,7 +47,12 @@ async function resolvePageNumber(
     if (typeof target === "number") {
       return Number.isInteger(target) && target >= 0 ? target + 1 : null;
     }
-    if (isPageRef(target)) return (await doc.getPageIndex(target)) + 1;
+    if (isPageRef(target)) {
+      // Guard the engine's answer too: a broken document can yield an index
+      // that is negative or fractional, which must not become a "page".
+      const index = await doc.getPageIndex(target);
+      return Number.isInteger(index) && index >= 0 ? index + 1 : null;
+    }
     return null;
   } catch {
     // A broken bookmark must not take the whole outline down with it.
