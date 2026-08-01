@@ -1002,6 +1002,40 @@ describe("PdfViewer", () => {
       expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
     });
 
+    it("stops refusing an insertion once the note has loaded", async () => {
+      mockSidecar({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 3, text: "引用する本文" })],
+      });
+      let finishLoad: (notes: {
+        content: string;
+        modifiedAtMs: null;
+      }) => void = () => {};
+      vi.mocked(loadNotes).mockReturnValue(
+        new Promise((resolve) => {
+          finishLoad = resolve;
+        }),
+      );
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+      await screen.findAllByRole("listitem");
+
+      await user.click(screen.getByRole("button", { name: "メモに挿入" }));
+      expect(
+        screen.getByText(/メモをまだ読み込めていないため/),
+      ).toBeInTheDocument();
+
+      // The load lands: the complaint no longer applies and must clear itself,
+      // without the reader having to try the insertion again.
+      await act(async () => {
+        finishLoad({ content: "", modifiedAtMs: null });
+      });
+
+      await waitFor(() =>
+        expect(screen.queryByText(/メモをまだ読み込めていないため/)).toBeNull(),
+      );
+    });
+
     it("closes the panel on a second press", async () => {
       const { user, editor } = await openNotes();
       expect(editor).toBeInTheDocument();

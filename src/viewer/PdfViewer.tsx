@@ -125,8 +125,8 @@ export function PdfViewer({
   const [popup, setPopup] = useState<Popup | null>(null);
   /** Why the reader's last highlight action did not happen, if it did not. */
   const [actionError, setActionError] = useState<string | null>(null);
-  /** Same, for an insertion the notes panel could not accept. */
-  const [noteError, setNoteError] = useState<string | null>(null);
+  /** Set when the notes panel refused an insertion; the reason is derived. */
+  const [insertRefused, setInsertRefused] = useState(false);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
 
@@ -509,21 +509,25 @@ export function PdfViewer({
   const insertToNotes = useCallback(
     (highlight: Highlight) => {
       setNotesOpen(true);
-      if (!notes.loaded) {
-        setNoteError("メモをまだ読み込めていないため、引用を挿入できません");
+      if (!notes.loaded || notes.conflict !== null) {
+        setInsertRefused(true);
         return;
       }
-      if (notes.conflict !== null) {
-        setNoteError(
-          "メモが競合しています。どちらを残すか選んでから挿入してください",
-        );
-        return;
-      }
-      setNoteError(null);
+      setInsertRefused(false);
       notes.insertQuote(highlight);
     },
     [notes],
   );
+
+  // Derived rather than stored, so the complaint goes away by itself once the
+  // note finishes loading or the reader settles the conflict.
+  const noteError = !insertRefused
+    ? null
+    : !notes.loaded
+      ? "メモをまだ読み込めていないため、引用を挿入できません"
+      : notes.conflict !== null
+        ? "メモが競合しています。どちらを残すか選んでから挿入してください"
+        : null;
 
   const currentSpread = spreads[spreadIndex] ?? [];
   const pageLabel =
