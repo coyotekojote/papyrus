@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -8,7 +9,7 @@ import { describe, expect, it } from "vitest";
  * that is the order of two import statements. Nothing in the toolchain sorts
  * imports today, but nothing stops one being added either -- and the breakage
  * would only show up as the original failure inside a WKWebView, which no test
- * environment reproduces. So assert the order on the source text.
+ * environment reproduces. So assert the order on the source.
  */
 const entryPoints: ReadonlyArray<readonly [file: string, pdfjs: string]> = [
   ["src/pdf/pdfjs-renderer.ts", "pdfjs-dist"],
@@ -16,19 +17,28 @@ const entryPoints: ReadonlyArray<readonly [file: string, pdfjs: string]> = [
 ];
 
 /**
- * Only what actually runs, in the order it runs: `^import` at the start of a
- * line skips comments and specifiers quoted inside other code, and `import
- * type` is dropped because it is erased before anything executes. The
- * non-greedy body spans the multi-line named-import forms.
+ * The modules a file imports for their side effects or values, in evaluation
+ * order. Parsed rather than matched: only a real parser can tell an import
+ * from the same characters sitting in a comment or a template literal, and
+ * `import type` is dropped because it is erased before anything executes.
  */
-const STATIC_VALUE_IMPORT = /^import\s+(?!type\s)[\s\S]*?["']([^"']+)["'];/gm;
-
 function importedModules(source: string): string[] {
-  return [...source.matchAll(STATIC_VALUE_IMPORT)].map(
-    ([, specifier]) =>
-      // `?worker&url` and friends are Vite query suffixes, not part of the id.
-      specifier.split("?")[0],
+  const parsed = ts.createSourceFile(
+    "entry.ts",
+    source,
+    ts.ScriptTarget.ESNext,
+    /* setParentNodes */ false,
+    ts.ScriptKind.TS,
   );
+  return parsed.statements
+    .filter(ts.isImportDeclaration)
+    .filter((statement) => !statement.importClause?.isTypeOnly)
+    .map((statement) =>
+      ts.isStringLiteral(statement.moduleSpecifier)
+        ? // `?worker&url` and friends are Vite query suffixes, not part of the id.
+          statement.moduleSpecifier.text.split("?")[0]
+        : "",
+    );
 }
 
 describe("polyfill import order", () => {
@@ -46,9 +56,8 @@ describe("polyfill import order", () => {
     },
   );
 
-  it("reads past comments, type imports and multi-line import forms", () => {
+  it("reads type imports, multi-line forms and query suffixes", () => {
     const source = [
-      '// import "./pdf-first-in-a-comment";',
       'import type { Thing } from "./a-type-only-import";',
       'import "./polyfills";',
       "import {",
@@ -63,5 +72,27 @@ describe("polyfill import order", () => {
       "pdfjs-dist",
       "./pdf-worker",
     ]);
+  });
+
+  it("ignores imports that only look like imports", () => {
+    const source = [
+      '// import "./in-a-line-comment";',
+      "/*",
+      'import "./in-a-block-comment";',
+      "*/",
+      "const snippet = `",
+      'import "./in-a-template-literal";',
+      "`;",
+      'import "./the-only-real-one";',
+    ].join("\n");
+
+    expect(importedModules(source)).toEqual(["./the-only-real-one"]);
+  });
+
+  it("finds nothing to order when the polyfill import is gone", () => {
+    expect(importedModules('import "pdfjs-dist";')).toEqual(["pdfjs-dist"]);
+    expect(importedModules('import "pdfjs-dist";').indexOf("./polyfills")).toBe(
+      -1,
+    );
   });
 });
