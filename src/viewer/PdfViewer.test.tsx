@@ -591,6 +591,51 @@ describe("PdfViewer", () => {
       );
     });
 
+    it("stops claiming to be loading once the load has failed", async () => {
+      vi.mocked(loadAnnotations).mockRejectedValue(new Error("読めません"));
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+
+      expect(await screen.findByText("読めません")).toBeInTheDocument();
+      expect(screen.queryByText("読み込み中…")).toBeNull();
+    });
+
+    it("still hit-tests a click when the selection lies outside the page", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1, text: "選択済みの本文" })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      // Text selected in the panel (outside any page) must not swallow the
+      // click that follows on the page itself.
+      const panelText = await screen.findByText("選択済みの本文");
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(panelText);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      // Inside the highlight's rect (x .1–.6, y .2–.22 of a 100x140 page).
+      // Built as a MouseEvent: jsdom has no PointerEvent, so fireEvent.pointerUp
+      // would drop the coordinates the hit-test needs.
+      fireEvent(
+        page,
+        new MouseEvent("pointerup", {
+          bubbles: true,
+          clientX: 20,
+          clientY: 30,
+        }),
+      );
+
+      expect(
+        screen.getByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeInTheDocument();
+    });
+
     it("closes the panel on a second press", async () => {
       const { user } = await openPanel();
       await screen.findByText(/テキストを選択して色を選ぶ/);

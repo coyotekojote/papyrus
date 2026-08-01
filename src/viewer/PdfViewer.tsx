@@ -368,24 +368,29 @@ export function PdfViewer({
       };
 
       const selection = window.getSelection();
-      if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0);
-        const pageElement = closestPage(range.startContainer);
-        const text = selection.toString().trim();
-        if (!pageElement || text === "") return;
+      const range =
+        selection && !selection.isCollapsed && selection.rangeCount > 0
+          ? selection.getRangeAt(0)
+          : null;
+      const selectedPage = range ? closestPage(range.startContainer) : null;
+      // A selection somewhere else (the highlights panel, say) leaves this a
+      // plain click on the page, so it falls through to the hit-test below.
+      if (range && selectedPage) {
+        const text = range.toString().trim();
         // A selection spanning pages is clipped to the page it started on.
         const rects = normalizeSelectionRects(
           Array.from(range.getClientRects()),
-          pageElement.getBoundingClientRect(),
+          selectedPage.getBoundingClientRect(),
         );
-        if (rects.length === 0) return;
-        setPopup({
-          kind: "create",
-          page: Number(pageElement.dataset.page),
-          rects,
-          text,
-          position,
-        });
+        if (text !== "" && rects.length > 0) {
+          setPopup({
+            kind: "create",
+            page: Number(selectedPage.dataset.page),
+            rects,
+            text,
+            position,
+          });
+        }
         return;
       }
 
@@ -661,7 +666,9 @@ export function PdfViewer({
                   annotations.removeHighlight(highlight.id)
                 }
               />
-            ) : (
+            ) : annotations.error ? null : (
+              // Only while the load is genuinely in flight: a failed load is
+              // already reported above and is never going to finish.
               <p className="sidebar__status">読み込み中…</p>
             )}
           </aside>

@@ -23,7 +23,11 @@ const MAX_SAVE_ATTEMPTS = 3;
 
 export interface UseAnnotationsResult {
   annotations: Annotations;
-  /** False until the initial load resolves; mutations are ignored before then. */
+  /**
+   * False until the initial load succeeds — a failed load leaves it false for
+   * good. Mutations are ignored while it is false, so a save can never write
+   * an empty document over annotations that are still on disk.
+   */
   loaded: boolean;
   /** Last load/save failure, for the UI to surface. */
   error: string | null;
