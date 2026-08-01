@@ -3,18 +3,11 @@ import {
   SidecarConflictError,
   emptyAnnotations,
   loadAnnotations,
-  loadNotes,
   saveAnnotations,
-  saveNotes,
   type Annotations,
   type Highlight,
 } from "../files/sidecar";
-import {
-  addHighlight,
-  appendQuote,
-  formatHighlightQuote,
-  removeHighlight,
-} from "./highlights";
+import { addHighlight, removeHighlight } from "./highlights";
 
 type Mutation = (annotations: Annotations) => Annotations;
 
@@ -201,25 +194,4 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
       [mutate],
     ),
   };
-}
-
-/**
- * Appends a highlight to notes.md as a markdown quote. Retries once when the
- * notes changed between load and save (same iCloud race as annotations).
- */
-export async function appendHighlightToNotes(
-  pdfPath: string,
-  highlight: Highlight,
-): Promise<void> {
-  const quote = formatHighlightQuote(highlight);
-  for (let attempt = 0; ; attempt += 1) {
-    const { content, modifiedAtMs } = await loadNotes(pdfPath);
-    try {
-      await saveNotes(pdfPath, appendQuote(content, quote), modifiedAtMs);
-      return;
-    } catch (cause) {
-      if (cause instanceof SidecarConflictError && attempt === 0) continue;
-      throw cause;
-    }
-  }
 }

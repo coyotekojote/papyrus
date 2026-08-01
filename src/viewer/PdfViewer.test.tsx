@@ -16,6 +16,7 @@ import {
   type Annotations,
   type Highlight,
 } from "../files/sidecar";
+import { SAVE_DEBOUNCE_MS } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { PdfViewer } from "./PdfViewer";
 
@@ -604,8 +605,10 @@ describe("PdfViewer", () => {
       expect(await navigator.clipboard.readText()).toBe("コピーされる本文");
     });
 
-    it("appends the highlight to notes.md as a quote", async () => {
-      const { user } = await openPanel({
+    it("appends the highlight to the notes panel as a quote", async () => {
+      // mockSidecar resets the notes mock, so the note's content is set after
+      // it and before the viewer mounts and loads it.
+      mockSidecar({
         ...emptyAnnotations(),
         highlights: [fakeHighlight({ page: 3, text: "引用する本文" })],
       });
@@ -613,16 +616,25 @@ describe("PdfViewer", () => {
         content: "# 既存メモ",
         modifiedAtMs: 7,
       });
+      const { user } = await openPanel();
       await screen.findAllByRole("listitem");
 
       await user.click(screen.getByRole("button", { name: "メモに挿入" }));
 
-      await waitFor(() =>
-        expect(saveNotes).toHaveBeenCalledWith(
-          "/papers/paper.pdf",
-          "# 既存メモ\n\n> 引用する本文\n>\n> — p.3\n",
-          7,
-        ),
+      // The panel opens with the quote in the editor…
+      const editor = await screen.findByRole("textbox", {
+        name: "メモ (markdown)",
+      });
+      expect(editor).toHaveValue("# 既存メモ\n\n> 引用する本文\n>\n> — p.3\n");
+      // …and it is written out once the autosave debounce elapses.
+      await waitFor(
+        () =>
+          expect(saveNotes).toHaveBeenCalledWith(
+            "/papers/paper.pdf",
+            "# 既存メモ\n\n> 引用する本文\n>\n> — p.3\n",
+            7,
+          ),
+        { timeout: SAVE_DEBOUNCE_MS + 1000 },
       );
     });
 
@@ -925,6 +937,114 @@ describe("PdfViewer", () => {
       await user.click(screen.getByRole("button", { name: "ハイライト" }));
 
       expect(screen.queryByText(/テキストを選択して色を選ぶ/)).toBeNull();
+    });
+  });
+
+  describe("notes panel", () => {
+    async function openNotes(content = "") {
+      vi.mocked(loadNotes).mockResolvedValue({ content, modifiedAtMs: 7 });
+      const viewer = renderViewer();
+      await viewer.user.click(screen.getByRole("button", { name: "メモ" }));
+      return {
+        ...viewer,
+        editor: await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        }),
+      };
+    }
+
+    it("shows notes.md in the editor", async () => {
+      const { editor } = await openNotes("# 読書メモ");
+
+      await waitFor(() => expect(editor).toHaveValue("# 読書メモ"));
+      expect(loadNotes).toHaveBeenCalledWith("/papers/paper.pdf");
+    });
+
+    it("autosaves what was typed once the typing pauses", async () => {
+      const { user, editor } = await openNotes("");
+      await waitFor(() => expect(editor).toBeEnabled());
+
+      await user.type(editor, "ひとこと");
+
+      expect(saveNotes).not.toHaveBeenCalled();
+      await waitFor(
+        () =>
+          expect(saveNotes).toHaveBeenCalledWith(
+            "/papers/paper.pdf",
+            "ひとこと",
+            7,
+          ),
+        { timeout: SAVE_DEBOUNCE_MS + 1000 },
+      );
+      // One write for the whole burst, not one per keystroke.
+      expect(saveNotes).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders the note as markdown in the preview", async () => {
+      const { user } = await openNotes("## 結論\n\n> 引用\n>\n> — p.3");
+      await screen.findByDisplayValue(/結論/);
+
+      await user.click(screen.getByRole("button", { name: "プレビュー" }));
+
+      expect(
+        screen.getByRole("heading", { level: 2, name: "結論" }),
+      ).toBeInTheDocument();
+      expect(document.querySelector(".markdown blockquote")).not.toBeNull();
+    });
+
+    it("keeps arrow keys in the editor instead of turning the page", async () => {
+      const { user, editor } = await openNotes("abc");
+      await waitFor(() => expect(editor).toHaveValue("abc"));
+
+      await user.click(editor);
+      await user.keyboard("{ArrowLeft}{ArrowLeft}");
+
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("stops refusing an insertion once the note has loaded", async () => {
+      mockSidecar({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 3, text: "引用する本文" })],
+      });
+      let finishLoad: (notes: {
+        content: string;
+        modifiedAtMs: null;
+      }) => void = () => {};
+      vi.mocked(loadNotes).mockReturnValue(
+        new Promise((resolve) => {
+          finishLoad = resolve;
+        }),
+      );
+      const { user } = renderViewer();
+      await user.click(screen.getByRole("button", { name: "ハイライト" }));
+      await screen.findAllByRole("listitem");
+
+      await user.click(screen.getByRole("button", { name: "メモに挿入" }));
+      expect(
+        screen.getByText(/メモをまだ読み込めていないため/),
+      ).toBeInTheDocument();
+
+      // The load lands: the complaint no longer applies and must clear itself,
+      // without the reader having to try the insertion again.
+      await act(async () => {
+        finishLoad({ content: "", modifiedAtMs: null });
+      });
+
+      await waitFor(() =>
+        expect(screen.queryByText(/メモをまだ読み込めていないため/)).toBeNull(),
+      );
+    });
+
+    it("closes the panel on a second press", async () => {
+      const { user, editor } = await openNotes();
+      expect(editor).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "メモ" }));
+
+      expect(
+        screen.queryByRole("textbox", { name: "メモ (markdown)" }),
+      ).toBeNull();
     });
   });
 });
