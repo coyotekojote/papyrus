@@ -46,7 +46,8 @@ export function OutlineSidebar({
       {rows.map((row) => {
         // A bookmark may carry no title at all; an empty label would make the
         // row invisible and its buttons unnameable for assistive tech.
-        const title = row.title.trim() === "" ? "（無題）" : row.title;
+        const trimmed = row.title.trim();
+        const title = trimmed === "" ? "（無題）" : trimmed;
         return (
           <li
             key={row.id}

@@ -237,6 +237,9 @@ body {
 }
 
 .page--placeholder {
+  /* Also rendered as a <span> (thumbnail fallback): stay a block so the
+     reserved width/height always take effect. */
+  display: block;
   background: var(--surface-raised);
   border: 1px dashed var(--border);
   box-shadow: none;

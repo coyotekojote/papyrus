@@ -347,6 +347,28 @@ describe("PdfViewer", () => {
       expect(selected()).toBe("後半6");
     });
 
+    it("keeps arrow keys for the sidebar while it has focus", async () => {
+      const { user } = await openSidebar();
+      await screen.findByRole("tree");
+
+      screen.getByRole("button", { name: /序章/ }).focus();
+      await user.keyboard("{ArrowRight}");
+
+      // The page-turn shortcut must not fire; the reader is still on page 1.
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("trims the surrounding whitespace off a bookmark title", async () => {
+      await openSidebar(PAGE_COUNT, [
+        { title: "  序章  ", pageNumber: 1, children: [] },
+      ]);
+      await screen.findByRole("tree");
+
+      expect(screen.getByRole("button", { name: "序章 1" })).toHaveTextContent(
+        /^序章1$/,
+      );
+    });
+
     it("shows a placeholder for a bookmark without a title", async () => {
       const { user } = await openSidebar(PAGE_COUNT, [
         {

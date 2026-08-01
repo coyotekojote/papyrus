@@ -380,7 +380,17 @@ export function PdfViewer({
 
       <div className="viewer__body">
         {sidebarOpen ? (
-          <aside className="sidebar" aria-label="目次">
+          <aside
+            className="sidebar"
+            aria-label="目次"
+            // The window-level page-turn shortcut must not swallow arrow keys
+            // meant for the focused tree or thumbnail list.
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.stopPropagation();
+              }
+            }}
+          >
             {outline === null ? (
               <p className="sidebar__status">読み込み中…</p>
             ) : outline.length > 0 ? (
