@@ -22,6 +22,7 @@ gh api graphql --paginate -f query='
         reviewThreads(first: 100, after: $endCursor) {
           pageInfo { hasNextPage endCursor }
           nodes {
+            id
             isResolved
             isOutdated
             path
@@ -42,6 +43,7 @@ gh api graphql --paginate -f query='
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
         | select(.isResolved | not)
         | {path, line, isOutdated,
+           threadId: .id,
            replyTo: (.comments.nodes[0].databaseId),
            omitted: (.comments.totalCount - (.comments.nodes | length)),
            comments: [.comments.nodes[]
@@ -49,6 +51,7 @@ gh api graphql --paginate -f query='
   jq -r '
     "=== \(.path):\(.line // "?")\(if .isOutdated then " [outdated]" else "" end)",
     "reply-to: \(.replyTo)",
+    "resolve-id: \(.threadId)",
     (.comments[] | "--- @\(.author)\n" + (
       if .isBot then
         # 制御用の HTML マーカーと、解析ログ / AI 向けプロンプトの折りたたみを除去。

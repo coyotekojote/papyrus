@@ -15,6 +15,7 @@ description: papyrus で PR を作成し、CodeRabbit / Copilot のレビュー�
 3. CI とレビューが出揃うまで待つ        ← scripts/wait-for-review.sh
 4. 未解決コメントを読む                  ← scripts/list-open-comments.sh
 5. 各コメントに「対応」か「対応しない理由」を返信
+6. 対応済みスレッドを解決する（Copilot は自動で解決しない）
    → 修正があれば commit & push して 3 に戻る
    → 未解決 0 件なら完了。マージするかユーザーに確認
 ```
@@ -123,12 +124,27 @@ EOF
 )"
 ```
 
-## 5. 収束判定
+## 5. スレッドを解決する
+
+CodeRabbit は対応を確認すると自分でスレッドを解決するが、**Copilot は解決しない**。放置すると未解決スレッドが残り続け、収束判定が永久に成立しない。
+
+対応と返信が済んだスレッドは自分で解決する。`<THREAD_ID>` は `list-open-comments.sh` の `resolve-id`。
+
+```bash
+gh api graphql -f query='
+  mutation($id: ID!) {
+    resolveReviewThread(input: {threadId: $id}) { thread { isResolved } }
+  }' -f id=<THREAD_ID>
+```
+
+解決するのは「修正した」または「対応しない理由を返信した」スレッドだけ。判断が付かず保留にしたものは残す。
+
+## 6. 収束判定
 
 push すると CodeRabbit が増分レビューを返すので、2 に戻る。次のすべてを満たしたら完了:
 
 - `list-open-comments.sh` の出力が空
-- 直近の CodeRabbit レビューが `Actionable comments posted: 0`、または新しいレビューが付かない
+- 直近の CodeRabbit レビューに新しい指摘がない（レビュー本文が空、または `Actionable comments posted: 0`）
 - CI が全て通過
 
 同じ指摘が3周以上続く、または CodeRabbit と自分の判断が食い違って決着しない場合は、ループを止めてユーザーに判断を仰ぐ。
