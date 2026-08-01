@@ -1,8 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Highlight, NormalizedRect } from "../files/sidecar";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
+import { HighlightsPanel } from "./HighlightsPanel";
 import { OutlineSidebar } from "./OutlineSidebar";
 import { PageCanvas } from "./PageCanvas";
+import {
+  CreateHighlightPopup,
+  HighlightActionsPopup,
+  type PopupPosition,
+} from "./SelectionPopup";
 import { ThumbnailList } from "./ThumbnailList";
+import {
+  highlightAtPoint,
+  makeHighlight,
+  normalizeSelectionRects,
+} from "./highlights";
+import { appendHighlightToNotes, useAnnotations } from "./use-annotations";
 import {
   PAGE_GAP,
   SPREAD_PADDING,
@@ -46,13 +59,39 @@ const OVERSCAN = 1;
 export interface PdfViewerProps {
   doc: PdfDocumentHandle;
   pageSizes: readonly PageSize[];
+  /** Path of the PDF on disk; annotations live in its sidecar folder. */
+  filePath: string;
   fileName: string;
   onClose: () => void;
+}
+
+type Popup =
+  | {
+      kind: "create";
+      page: number;
+      rects: NormalizedRect[];
+      text: string;
+      position: PopupPosition;
+    }
+  | { kind: "actions"; highlight: Highlight; position: PopupPosition };
+
+/** The page element (carrying `data-page`) around a DOM node, if any. */
+function closestPage(node: Node | null): HTMLElement | null {
+  const element =
+    node instanceof Element ? node : (node?.parentElement ?? null);
+  return element?.closest<HTMLElement>(".page[data-page]") ?? null;
+}
+
+function copyToClipboard(text: string): void {
+  void navigator.clipboard?.writeText(text).catch(() => {
+    // Losing a copy is not worth an error dialog.
+  });
 }
 
 export function PdfViewer({
   doc,
   pageSizes,
+  filePath,
   fileName,
   onClose,
 }: PdfViewerProps) {
@@ -63,10 +102,26 @@ export function PdfViewer({
   const [viewportWidth, setViewportWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [highlightsOpen, setHighlightsOpen] = useState(false);
+  const [popup, setPopup] = useState<Popup | null>(null);
+  /** Failure of the latest copy-to-notes, surfaced in the highlights panel. */
+  const [notesError, setNotesError] = useState<string | null>(null);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
 
+  const annotations = useAnnotations(filePath);
+  const highlightsByPage = useMemo(() => {
+    const byPage = new Map<number, Highlight[]>();
+    for (const highlight of annotations.annotations.highlights) {
+      const list = byPage.get(highlight.page);
+      if (list) list.push(highlight);
+      else byPage.set(highlight.page, [highlight]);
+    }
+    return byPage;
+  }, [annotations.annotations.highlights]);
+
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -178,6 +233,9 @@ export function PdfViewer({
 
       const left = scroller.scrollLeft;
       setScrollLeft(left);
+      // The popup is anchored to viewport coordinates; scrolling moves the
+      // page out from under it.
+      setPopup((current) => (current ? null : current));
 
       const nearest = nearestItemIndex(layout, left, viewportWidth);
       if (pendingDomIndexRef.current !== null) {
@@ -271,8 +329,12 @@ export function PdfViewer({
         cancelPendingScroll();
       }
     };
-    // Any direct grab of the scroller also abandons an in-flight smooth scroll.
-    const onPointerDown = () => cancelPendingScroll();
+    // Any direct grab of the scroller also abandons an in-flight smooth scroll
+    // and dismisses a floating popup, whose anchor is about to go stale.
+    const onPointerDown = () => {
+      cancelPendingScroll();
+      setPopup(null);
+    };
 
     scroller.addEventListener("wheel", onWheel, { passive: false });
     scroller.addEventListener("pointerdown", onPointerDown);
@@ -281,6 +343,90 @@ export function PdfViewer({
       scroller.removeEventListener("pointerdown", onPointerDown);
     };
   }, [cancelPendingScroll]);
+
+  /**
+   * A finished pointer gesture either carries a text selection (offer to
+   * highlight it) or is a plain click (hit-test the existing highlights).
+   * Both popups anchor to the pointer, positioned inside `.viewer__body`.
+   */
+  const handlePointerUp = useCallback(
+    (event: React.PointerEvent) => {
+      const bodyRect = bodyRef.current?.getBoundingClientRect();
+      if (!bodyRect) return;
+      const position: PopupPosition = {
+        left: event.clientX - bodyRect.left,
+        top: event.clientY - bodyRect.top + 12,
+      };
+
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        const pageElement = closestPage(range.startContainer);
+        const text = selection.toString().trim();
+        if (!pageElement || text === "") return;
+        // A selection spanning pages is clipped to the page it started on.
+        const rects = normalizeSelectionRects(
+          Array.from(range.getClientRects()),
+          pageElement.getBoundingClientRect(),
+        );
+        if (rects.length === 0) return;
+        setPopup({
+          kind: "create",
+          page: Number(pageElement.dataset.page),
+          rects,
+          text,
+          position,
+        });
+        return;
+      }
+
+      const pageElement = closestPage(
+        event.target instanceof Node ? event.target : null,
+      );
+      if (!pageElement) return;
+      const pageRect = pageElement.getBoundingClientRect();
+      if (pageRect.width <= 0 || pageRect.height <= 0) return;
+      const hit = highlightAtPoint(
+        annotations.annotations.highlights,
+        Number(pageElement.dataset.page),
+        {
+          x: (event.clientX - pageRect.left) / pageRect.width,
+          y: (event.clientY - pageRect.top) / pageRect.height,
+        },
+      );
+      if (hit) setPopup({ kind: "actions", highlight: hit, position });
+    },
+    [annotations.annotations.highlights],
+  );
+
+  const createHighlight = useCallback(
+    (colorId: string) => {
+      if (popup?.kind !== "create") return;
+      annotations.addHighlight(
+        makeHighlight({
+          page: popup.page,
+          rects: popup.rects,
+          color: colorId,
+          text: popup.text,
+          createdAt: new Date(),
+        }),
+      );
+      window.getSelection()?.removeAllRanges();
+      setPopup(null);
+    },
+    [annotations, popup],
+  );
+
+  const insertToNotes = useCallback(
+    (highlight: Highlight) => {
+      setNotesError(null);
+      appendHighlightToNotes(filePath, highlight).catch((cause: unknown) => {
+        setNotesError(cause instanceof Error ? cause.message : String(cause));
+        setHighlightsOpen(true);
+      });
+    },
+    [filePath],
+  );
 
   const currentSpread = spreads[spreadIndex] ?? [];
   const pageLabel =
@@ -301,6 +447,14 @@ export function PdfViewer({
           onClick={() => setSidebarOpen((open) => !open)}
         >
           目次
+        </button>
+        <button
+          type="button"
+          className="toolbar__button"
+          aria-pressed={highlightsOpen}
+          onClick={() => setHighlightsOpen((open) => !open)}
+        >
+          ハイライト
         </button>
         <span className="toolbar__title" title={fileName}>
           {fileName}
@@ -378,7 +532,7 @@ export function PdfViewer({
         </div>
       </header>
 
-      <div className="viewer__body">
+      <div className="viewer__body" ref={bodyRef}>
         {sidebarOpen ? (
           <aside
             className="sidebar"
@@ -416,6 +570,7 @@ export function PdfViewer({
           className="scroller"
           ref={scrollerRef}
           onScroll={handleScroll}
+          onPointerUp={handlePointerUp}
           tabIndex={0}
           role="region"
           aria-label="PDFページ"
@@ -444,6 +599,8 @@ export function PdfViewer({
                         scale={zoom}
                         width={size.width}
                         height={size.height}
+                        highlights={highlightsByPage.get(pageNumber)}
+                        withTextLayer
                       />
                     );
                   })
@@ -467,6 +624,65 @@ export function PdfViewer({
             );
           })}
         </div>
+
+        {highlightsOpen ? (
+          <aside
+            className="sidebar sidebar--right"
+            aria-label="ハイライト"
+            // Same as the outline sidebar: keep arrow keys away from the
+            // window-level page-turn shortcut while the panel has focus.
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                event.stopPropagation();
+              }
+            }}
+          >
+            {(annotations.error ?? notesError) ? (
+              <p className="sidebar__status sidebar__status--error">
+                {annotations.error ?? notesError}
+              </p>
+            ) : null}
+            {annotations.loaded ? (
+              <HighlightsPanel
+                highlights={annotations.annotations.highlights}
+                onJumpToPage={goToPage}
+                onCopy={(highlight) => copyToClipboard(highlight.text)}
+                onInsertToNotes={insertToNotes}
+                onDelete={(highlight) =>
+                  annotations.removeHighlight(highlight.id)
+                }
+              />
+            ) : (
+              <p className="sidebar__status">読み込み中…</p>
+            )}
+          </aside>
+        ) : null}
+
+        {popup?.kind === "create" ? (
+          <CreateHighlightPopup
+            position={popup.position}
+            onPick={createHighlight}
+            onDismiss={() => setPopup(null)}
+          />
+        ) : null}
+        {popup?.kind === "actions" ? (
+          <HighlightActionsPopup
+            position={popup.position}
+            onCopy={() => {
+              copyToClipboard(popup.highlight.text);
+              setPopup(null);
+            }}
+            onInsertToNotes={() => {
+              insertToNotes(popup.highlight);
+              setPopup(null);
+            }}
+            onDelete={() => {
+              annotations.removeHighlight(popup.highlight.id);
+              setPopup(null);
+            }}
+            onDismiss={() => setPopup(null)}
+          />
+        ) : null}
       </div>
     </div>
   );

@@ -20,6 +20,15 @@ export interface RenderPageOptions {
   signal?: AbortSignal;
 }
 
+export interface RenderTextLayerOptions {
+  /** Same scale as the page canvas, so the text sits exactly over the paint. */
+  scale: number;
+  /** Target element. The renderer owns its contents and sizing during the call. */
+  container: HTMLElement;
+  /** Aborts an in-flight render (e.g. the page scrolled out of range). */
+  signal?: AbortSignal;
+}
+
 /**
  * One bookmark of the document outline.
  *
@@ -41,6 +50,14 @@ export interface PdfDocumentHandle {
   getPageSize(pageNumber: number): Promise<PageSize>;
   /** 1-based page number. Draws the page into `options.canvas`. */
   renderPage(pageNumber: number, options: RenderPageOptions): Promise<void>;
+  /**
+   * 1-based page number. Fills `options.container` with selectable text spans
+   * positioned over the rendered page (replacing any previous contents).
+   */
+  renderTextLayer(
+    pageNumber: number,
+    options: RenderTextLayerOptions,
+  ): Promise<void>;
   /** Bookmark tree with destinations already resolved. Empty when there is none. */
   getOutline(): Promise<OutlineNode[]>;
   destroy(): Promise<void>;
