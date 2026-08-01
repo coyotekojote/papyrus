@@ -208,7 +208,9 @@ export function highlightAtPoint(
   page: number,
   point: NormalizedPoint,
 ): Highlight | null {
-  for (const highlight of [...highlights].reverse()) {
+  // Walked back to front: the newest highlight is the one drawn on top.
+  for (let index = highlights.length - 1; index >= 0; index -= 1) {
+    const highlight = highlights[index];
     if (highlight.page !== page) continue;
     const hit = highlight.rects.some(
       (rect) =>
