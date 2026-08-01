@@ -38,6 +38,13 @@ function pdfjsRuntimeAssets(): Plugin {
 export default defineConfig({
   plugins: [react(), pdfjsRuntimeAssets()],
 
+  // pdf.js instantiates its worker with `type: "module"`, and the worker
+  // bundle is Emscripten glue that reads `import.meta.url` and dynamically
+  // imports its WASM fallbacks. Vite's default `iife` can only approximate
+  // that (it rewrites `import.meta.url` to `self.location.href`), so emit the
+  // worker as ESM and let it mean what it says.
+  worker: { format: "es" },
+
   // Vite options tailored for Tauri development
   clearScreen: false,
   server: {

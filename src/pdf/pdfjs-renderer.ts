@@ -1,3 +1,6 @@
+// Must stay above the pdf.js import: it patches globals pdf.js depends on.
+import "./polyfills";
+
 import {
   GlobalWorkerOptions,
   TextLayer,
@@ -7,9 +10,12 @@ import {
   type PDFPageProxy,
   type RenderTask,
 } from "pdfjs-dist";
-// Vite resolves `?url` to the emitted asset URL, so the worker ships with the
-// bundle instead of being fetched from a CDN (which the app's CSP forbids).
-import workerUrl from "pdfjs-dist/build/pdf.worker.mjs?url";
+// Vite bundles the worker entry and resolves `?worker&url` to the emitted
+// asset URL, so the worker ships with the bundle instead of being fetched from
+// a CDN (which the app's CSP forbids). Handing pdf.js a URL rather than a
+// `workerPort` keeps it owning the worker's lifetime, so `destroy()` still
+// tears it down per document.
+import workerUrl from "./pdf-worker?worker&url";
 
 import { backingStoreRatio } from "./canvas-scale";
 import { resolveOutline } from "./outline-resolve";
