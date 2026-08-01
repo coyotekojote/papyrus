@@ -30,6 +30,17 @@ review_done=false
 ci_state='(未取得)'
 
 while ((SECONDS < deadline)); do
+  # 待機中に push が入ると、CI は新 HEAD、レビューは旧 HEAD という食い違った
+  # 組み合わせで揃ってしまう。HEAD が動いたら最初からやり直す。
+  current_sha="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || echo "$head_sha")"
+  if [[ "$current_sha" != "$head_sha" ]]; then
+    echo "HEAD が $current_sha に更新されたため待機し直します"
+    head_sha="$current_sha"
+    ci_done=false
+    review_done=false
+    ci_state='(未取得)'
+  fi
+
   if ! $ci_done; then
     checks="$(gh pr checks "$PR" --json name,bucket 2>/dev/null || echo '[]')"
     # 必須ジョブごとに bucket を引く。まだ登録されていないジョブは "missing"。
@@ -52,8 +63,10 @@ while ((SECONDS < deadline)); do
     # CodeRabbit は commit status ("CodeRabbit") をレビュー中 pending、完了で
     # success にする。レビューの存在だけを見ると、本文が空のレビューが先に
     # API へ現れる場合があり、まだ進行中なのに完了と誤認する。status が権威。
+    # combined status API は context ごとに最新1件を返すが、配列の順序に
+    # 頼らずに済むよう updated_at で最新を取る。
     cr_status="$(gh api "repos/$REPO/commits/$head_sha/status" \
-      --jq '[.statuses[] | select(.context == "CodeRabbit")] | last | .state // "missing"' 2>/dev/null || echo missing)"
+      --jq '[.statuses[] | select(.context == "CodeRabbit")] | max_by(.updated_at) | .state // "missing"' 2>/dev/null || echo missing)"
     case "$cr_status" in
       failure | error)
         echo "CodeRabbit のレビューが失敗: $cr_status"
