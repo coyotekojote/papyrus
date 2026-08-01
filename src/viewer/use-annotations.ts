@@ -78,6 +78,10 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
       annotations: emptyAnnotations(),
       modifiedAtMs: null,
     };
+    // Saves are only ordered within one document. Keeping the old chain would
+    // make this document's first save wait on the previous one's — which may
+    // still be hanging on a slow (or stalled) sidecar write.
+    flushRef.current = Promise.resolve();
     setLoaded(false);
     setError(null);
     setAnnotations(emptyAnnotations());

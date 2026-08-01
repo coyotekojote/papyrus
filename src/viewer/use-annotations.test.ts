@@ -304,6 +304,40 @@ describe("useAnnotations", () => {
     expect(vi.mocked(saveAnnotations).mock.calls[0][2]).toBe(900);
   });
 
+  it("does not let a stalled save of the previous document block the next one", async () => {
+    vi.mocked(loadAnnotations).mockResolvedValue({
+      annotations: emptyAnnotations(),
+      modifiedAtMs: 111,
+    });
+    // The first document's save never settles (a stalled iCloud write).
+    vi.mocked(saveAnnotations)
+      .mockReturnValueOnce(new Promise<number>(() => {}))
+      .mockResolvedValue(999);
+
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useAnnotations(path),
+      { initialProps: { path: PATH } },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => result.current.addHighlight(highlight("stuck")));
+    await waitFor(() => expect(saveAnnotations).toHaveBeenCalledOnce());
+
+    rerender({ path: "/papers/other.pdf" });
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    act(() => result.current.addHighlight(highlight("next-doc")));
+
+    // Without a fresh flush chain this save would queue behind the stalled one.
+    await waitFor(() => expect(saveAnnotations).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(saveAnnotations).mock.calls[1][0]).toBe(
+      "/papers/other.pdf",
+    );
+    expect(
+      vi.mocked(saveAnnotations).mock.calls[1][1].highlights.map((h) => h.id),
+    ).toEqual(["next-doc"]);
+  });
+
   it("ignores mutations before the initial load resolves", async () => {
     let resolveLoad!: (value: {
       annotations: Annotations;
