@@ -10,7 +10,8 @@ const STATUS_LABEL: Record<NotesStatus, string> = {
   unsaved: "未保存",
   saving: "保存中…",
   conflict: "競合しています",
-  error: "保存できません",
+  // Covers a failed load as well as a failed save; the message below says which.
+  error: "エラー",
 };
 
 export interface NotesPanelProps {

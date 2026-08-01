@@ -70,6 +70,24 @@ describe("parseMarkdown", () => {
     expect(block.kind === "list" && block.items).toHaveLength(2);
   });
 
+  it("flattens a shallowly nested item into the list above it", () => {
+    const block = only("- one\n  - nested");
+    expect(block).toMatchObject({ kind: "list", ordered: false });
+    expect(block.kind === "list" && block.items.map(inlineText)).toEqual([
+      "one",
+      "nested",
+    ]);
+  });
+
+  it("leaves a deeply indented item as literal text", () => {
+    // Four spaces is not a list marker here, so the line is not swallowed.
+    const blocks = parseMarkdown("- one\n    - too deep");
+    expect(blocks.map((block) => block.kind)).toEqual(["list", "paragraph"]);
+    expect(
+      blocks[1].kind === "paragraph" && inlineText(blocks[1].children),
+    ).toBe("- too deep");
+  });
+
   it("ends a paragraph when a list starts without a blank line", () => {
     expect(parseMarkdown("メモ\n- one").map((block) => block.kind)).toEqual([
       "paragraph",

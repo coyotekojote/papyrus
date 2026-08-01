@@ -7,8 +7,11 @@
  * emphasis and links. It produces a tree the React view walks — never an HTML
  * string — so a note can never inject markup into the app.
  *
- * Deliberately not supported: nested lists, tables, reference links, raw HTML.
- * They stay as literal text rather than being silently swallowed.
+ * Deliberately not supported: tables, reference links, raw HTML. They stay as
+ * literal text rather than being silently swallowed. Nested lists are the one
+ * exception: an item indented up to three spaces is flattened into the list
+ * above it, which reads better than a stray `- ` mid-note. Deeper indentation
+ * is not a list marker at all and does stay literal.
  */
 
 export type Inline =
