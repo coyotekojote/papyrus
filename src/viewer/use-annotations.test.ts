@@ -216,6 +216,53 @@ describe("useAnnotations", () => {
     await waitFor(() => expect(result.current.error).toBe("ディスクが満杯"));
   });
 
+  it("ignores a load that resolves after the path changed", async () => {
+    let resolveFirst!: (value: {
+      annotations: Annotations;
+      modifiedAtMs: number | null;
+    }) => void;
+    vi.mocked(loadAnnotations)
+      .mockReturnValueOnce(new Promise((resolve) => (resolveFirst = resolve)))
+      .mockResolvedValueOnce({
+        annotations: withHighlights(highlight("second-doc")),
+        modifiedAtMs: 900,
+      });
+
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useAnnotations(path),
+      { initialProps: { path: PATH } },
+    );
+
+    rerender({ path: "/papers/other.pdf" });
+    await waitFor(() =>
+      expect(result.current.annotations.highlights.map((h) => h.id)).toEqual([
+        "second-doc",
+      ]),
+    );
+
+    // The first document's load finally lands; it belongs to a document the
+    // reader has left and must not overwrite the current one.
+    await act(async () => {
+      resolveFirst({
+        annotations: withHighlights(highlight("first-doc")),
+        modifiedAtMs: 100,
+      });
+    });
+
+    expect(result.current.annotations.highlights.map((h) => h.id)).toEqual([
+      "second-doc",
+    ]);
+
+    // The stale mtime must not leak into the next save either.
+    vi.mocked(saveAnnotations).mockResolvedValue(901);
+    act(() => result.current.addHighlight(highlight("added")));
+    await waitFor(() => expect(saveAnnotations).toHaveBeenCalledOnce());
+    expect(vi.mocked(saveAnnotations).mock.calls[0][0]).toBe(
+      "/papers/other.pdf",
+    );
+    expect(vi.mocked(saveAnnotations).mock.calls[0][2]).toBe(900);
+  });
+
   it("ignores mutations before the initial load resolves", async () => {
     let resolveLoad!: (value: {
       annotations: Annotations;

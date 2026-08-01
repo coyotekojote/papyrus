@@ -55,33 +55,50 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
   const pendingRef = useRef<Mutation[]>([]);
   /** Serializes flushes so saves never interleave. */
   const flushRef = useRef<Promise<void>>(Promise.resolve());
-  const activeRef = useRef(true);
+  const mountedRef = useRef(true);
+  /**
+   * Bumped for every path this hook loads. An async result carrying an older
+   * generation belongs to a document the reader has already left, and must not
+   * touch the state of the current one.
+   */
+  const generationRef = useRef(0);
+
+  const isCurrent = useCallback(
+    (generation: number) =>
+      mountedRef.current && generationRef.current === generation,
+    [],
+  );
 
   useEffect(() => {
-    activeRef.current = true;
+    mountedRef.current = true;
+    const generation = (generationRef.current += 1);
     loadedRef.current = false;
     pendingRef.current = [];
+    persistedRef.current = {
+      annotations: emptyAnnotations(),
+      modifiedAtMs: null,
+    };
     setLoaded(false);
     setError(null);
     setAnnotations(emptyAnnotations());
 
     void loadAnnotations(pdfPath)
       .then((result) => {
-        if (!activeRef.current) return;
+        if (!isCurrent(generation)) return;
         persistedRef.current = result;
         setAnnotations(result.annotations);
         loadedRef.current = true;
         setLoaded(true);
       })
       .catch((cause: unknown) => {
-        if (!activeRef.current) return;
+        if (!isCurrent(generation)) return;
         setError(cause instanceof Error ? cause.message : String(cause));
       });
 
     return () => {
-      activeRef.current = false;
+      mountedRef.current = false;
     };
-  }, [pdfPath]);
+  }, [isCurrent, pdfPath]);
 
   const applyPending = useCallback(
     (base: Annotations) =>
@@ -90,9 +107,12 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
   );
 
   const flush = useCallback(async () => {
+    // Captured up front: a save that resolves after the reader moved to
+    // another document must not write that document's persisted state.
+    const generation = generationRef.current;
     for (
       let attempt = 0;
-      pendingRef.current.length > 0 && activeRef.current;
+      pendingRef.current.length > 0 && isCurrent(generation);
       attempt += 1
     ) {
       if (attempt >= MAX_SAVE_ATTEMPTS) {
@@ -109,6 +129,7 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
           next,
           persistedRef.current.modifiedAtMs,
         );
+        if (!isCurrent(generation)) return;
         persistedRef.current = { annotations: next, modifiedAtMs };
         pendingRef.current.splice(0, taken);
       } catch (cause) {
@@ -119,13 +140,12 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
           // every save after it.
           try {
             const fresh = await loadAnnotations(pdfPath);
+            if (!isCurrent(generation)) return;
             persistedRef.current = fresh;
-            if (activeRef.current) {
-              setAnnotations(applyPending(fresh.annotations));
-            }
+            setAnnotations(applyPending(fresh.annotations));
             continue;
           } catch (reloadCause) {
-            if (activeRef.current) {
+            if (isCurrent(generation)) {
               setError(
                 reloadCause instanceof Error
                   ? reloadCause.message
@@ -135,19 +155,19 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
             return;
           }
         }
-        if (activeRef.current) {
+        if (isCurrent(generation)) {
           setError(cause instanceof Error ? cause.message : String(cause));
         }
         return;
       }
     }
-  }, [applyPending, pdfPath]);
+  }, [applyPending, isCurrent, pdfPath]);
 
   const mutate = useCallback(
     (fn: Mutation) => {
       // Before the initial load, a save could clobber highlights already on
       // disk with an empty base — refuse instead.
-      if (!activeRef.current || !loadedRef.current) return;
+      if (!mountedRef.current || !loadedRef.current) return;
       pendingRef.current.push(fn);
       setAnnotations((current) => fn(current));
       setError(null);
