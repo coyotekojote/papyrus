@@ -427,7 +427,10 @@ export function PdfViewer({
         // the highlight covers.
         const onPage = range.cloneRange();
         if (closestPage(range.endContainer) !== selectedPage) {
-          onPage.setEnd(selectedPage, selectedPage.childNodes.length);
+          // Cut at the end of the text layer, not of the page: the page also
+          // holds the page-number label, which is not part of the document.
+          const end = selectedPage.querySelector(".textLayer") ?? selectedPage;
+          onPage.setEnd(end, end.childNodes.length);
         }
         const text = onPage.toString().trim();
         const rects = normalizeSelectionRects(

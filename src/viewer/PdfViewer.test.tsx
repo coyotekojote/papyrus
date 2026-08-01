@@ -722,9 +722,14 @@ describe("PdfViewer", () => {
       if (!page) throw new Error("page 1 is not rendered");
       page.getBoundingClientRect = () =>
         ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      // Real selections live in the text layer; the page-number label sits
+      // after it and must stay out of the extract.
+      const textLayer = page.querySelector(".textLayer");
+      if (!textLayer) throw new Error("page 1 has no text layer");
       const onPage = document.createElement("span");
       onPage.textContent = "ページ上の本文";
-      page.append(onPage);
+      textLayer.append(onPage);
+      expect(page.querySelector(".page__label")?.textContent).toBe("1");
 
       // jsdom lays nothing out; every range reports the same single rect.
       Range.prototype.getClientRects = () =>
