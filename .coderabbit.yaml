@@ -47,8 +47,16 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # 正規表現。main 以外を base にした PR は既定でレビューされないため、
+    # stacked PR (下段のブランチを base に積んだ PR) が黙ってスキップされる。
+    # スキップされても commit status は success になるので、待っている側から
+    # は「レビュー中」と見分けが付かない。ブランチ命名規約を列挙して防ぐ。
     base_branches:
       - main
+      - feature/.*
+      - fix/.*
+      - chore/.*
+      - docs/.*
     ignore_title_keywords:
       - WIP
       - wip
