@@ -9,7 +9,7 @@ description: papyrus で PR を作成し、CodeRabbit / Copilot のレビュー�
 
 ## 全体の流れ
 
-```
+```text
 1. ブランチを切ってコミット・push
 2. PR 作成
 3. CI とレビューが出揃うまで待つ        ← scripts/wait-for-review.sh
@@ -57,7 +57,9 @@ cd src-tauri && mise exec -- cargo fmt --check && mise exec -- cargo clippy -- -
 .claude/skills/shipping-pull-requests/scripts/wait-for-review.sh <PR番号> [タイムアウト秒]
 ```
 
-CI 3 ジョブ（Frontend / Rust / Tauri build）が終わり、かつ **現在の HEAD より後に** CodeRabbit のレビューが提出されるまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI 失敗。
+必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になり、かつ **現在の HEAD コミットに対する** CodeRabbit のレビューが提出されるまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI が失敗またはスキップ。
+
+必須ジョブ名はスクリプト内の `REQUIRED_CHECKS` にある。`.github/workflows/ci.yml` のジョブ名を変えたらここも直す（放置するとタイムアウトするまで `missing` のまま待ち続ける）。
 
 数分かかるので、Bash ツールの `run_in_background: true` で起動して完了通知を待つ。手動で `sleep` を回さないこと。
 
@@ -73,7 +75,9 @@ gh run view --log-failed -R coyotekojote/papyrus   # 失敗ジョブのログ
 .claude/skills/shipping-pull-requests/scripts/list-open-comments.sh <PR番号>
 ```
 
-未解決の review thread だけを、`reply-to: <ID>` 付きで出力する。bot コメントの HTML マーカーと `<details>`（解析ログ・AI 向けプロンプト）は除去済み。
+未解決の review thread だけを、`reply-to: <ID>` 付きで出力する。bot のコメントからは HTML マーカーと `<details>`（解析ログ・AI 向けプロンプト）を除去する。人間のコメントは加工しない。
+
+スレッドは全件辿るが、1スレッド内のコメントは先頭 100 件まで。超えた分は `[... 他 N 件のコメントは未取得]` と出るので、その時は Web UI で確認する。
 
 PR 全体のサマリレビューも確認する。
 
