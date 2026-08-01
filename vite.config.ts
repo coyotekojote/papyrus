@@ -2,6 +2,7 @@
 import { cpSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -19,7 +20,10 @@ function pdfjsRuntimeAssets(): Plugin {
       const pdfjsRoot = path.dirname(
         require.resolve("pdfjs-dist/package.json"),
       );
-      const target = path.resolve(import.meta.dirname, "public/pdfjs");
+      // Derived from `import.meta.url` rather than `import.meta.dirname`, which
+      // is undefined before Node 20.11.
+      const projectRoot = fileURLToPath(new URL(".", import.meta.url));
+      const target = path.resolve(projectRoot, "public/pdfjs");
       mkdirSync(target, { recursive: true });
       for (const dir of ["cmaps", "standard_fonts", "wasm"]) {
         cpSync(path.join(pdfjsRoot, dir), path.join(target, dir), {

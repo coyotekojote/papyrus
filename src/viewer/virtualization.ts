@@ -85,7 +85,17 @@ export function scrollOffsetForItem(
   return Math.min(Math.max(target, 0), max);
 }
 
-/** The item whose centre is nearest the viewport centre — i.e. the one on screen. */
+function itemCentre(item: LayoutItem): number {
+  return item.offset + item.size / 2;
+}
+
+/**
+ * The item whose centre is nearest the viewport centre — i.e. the one on screen.
+ *
+ * Runs on every (rAF-throttled) scroll update, so it binary-searches rather than
+ * sweeping the layout: `computeLayout` places items end to end, which makes
+ * their centres non-decreasing. Exact ties resolve to the earliest item.
+ */
 export function nearestItemIndex(
   layout: readonly LayoutItem[],
   scrollOffset: number,
@@ -93,14 +103,35 @@ export function nearestItemIndex(
 ): number {
   if (layout.length === 0) return 0;
   const centre = Math.max(0, scrollOffset) + Math.max(0, viewportSize) / 2;
-  let best = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const [index, item] of layout.entries()) {
-    const distance = Math.abs(item.offset + item.size / 2 - centre);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      best = index;
-    }
+
+  // Lower bound: the first item whose centre is at or past the viewport centre.
+  let low = 0;
+  let high = layout.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (itemCentre(layout[mid]) < centre) low = mid + 1;
+    else high = mid;
+  }
+
+  // Centres before `low` grow towards it and centres after it grow away, so the
+  // winner is `low` or its predecessor.
+  let best = low;
+  if (low >= layout.length) {
+    best = layout.length - 1;
+  } else if (low > 0) {
+    const before = centre - itemCentre(layout[low - 1]);
+    const after = itemCentre(layout[low]) - centre;
+    // `<=` keeps the earlier item on an exact tie, matching a forward scan.
+    if (before <= after) best = low - 1;
+  }
+
+  // Zero-size items can share a centre; step back to the first of any such run
+  // so the result never depends on where the search happened to land.
+  while (
+    best > 0 &&
+    itemCentre(layout[best - 1]) === itemCentre(layout[best])
+  ) {
+    best -= 1;
   }
   return best;
 }

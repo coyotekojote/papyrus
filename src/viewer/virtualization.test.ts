@@ -6,6 +6,7 @@ import {
   rangeIncludes,
   scrollOffsetForItem,
   visibleRange,
+  type LayoutItem,
 } from "./virtualization";
 
 describe("computeLayout", () => {
@@ -135,5 +136,91 @@ describe("nearestItemIndex", () => {
 
   it("clamps to the first item for a negative offset", () => {
     expect(nearestItemIndex(layout, -400, 100)).toBe(0);
+  });
+
+  it("returns the last item when scrolled past the end", () => {
+    expect(nearestItemIndex(layout, 10_000, 100)).toBe(2);
+  });
+
+  describe("matches a linear scan", () => {
+    /**
+     * Reference implementation: the straightforward forward sweep the binary
+     * search replaced. Both must agree, including on tie-breaking.
+     */
+    function linearNearestItemIndex(
+      items: readonly LayoutItem[],
+      scrollOffset: number,
+      viewportSize: number,
+    ): number {
+      if (items.length === 0) return 0;
+      const centre = Math.max(0, scrollOffset) + Math.max(0, viewportSize) / 2;
+      let best = 0;
+      let bestDistance = Number.POSITIVE_INFINITY;
+      for (const [index, item] of items.entries()) {
+        const distance = Math.abs(item.offset + item.size / 2 - centre);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+      return best;
+    }
+
+    /** Every boundary that matters, expressed against a layout's own centres. */
+    function boundaryOffsets(
+      items: readonly LayoutItem[],
+      viewportSize: number,
+    ): number[] {
+      const half = viewportSize / 2;
+      const centres = items.map((item) => item.offset + item.size / 2);
+      const offsets = [-1000, -1, 0, 1];
+      for (const [index, centre] of centres.entries()) {
+        // Scroll offsets that place the viewport centre exactly on this item's
+        // centre, just before it, just after it, and midway to the next one.
+        offsets.push(centre - half - 1, centre - half, centre - half + 1);
+        const next = centres[index + 1];
+        if (next !== undefined) offsets.push((centre + next) / 2 - half);
+      }
+      offsets.push(layoutExtent(items) - half, layoutExtent(items) + 1000);
+      return offsets;
+    }
+
+    const cases: Array<[string, LayoutItem[]]> = [
+      ["uniform items", computeLayout([100, 100, 100, 100, 100])],
+      ["items of varying size", computeLayout([50, 300, 80, 240, 120, 60])],
+      ["items separated by a gap", computeLayout([100, 100, 100, 100], 20)],
+      ["a single item", computeLayout([100])],
+      ["a 200-spread document", computeLayout(Array(200).fill(800))],
+      ["degenerate zero-size items", computeLayout([0, 0, 100, 0, 0])],
+    ];
+
+    for (const [name, items] of cases) {
+      it(name, () => {
+        const viewportSize = 100;
+        const offsets = boundaryOffsets(items, viewportSize);
+        expect(offsets.length).toBeGreaterThan(3);
+
+        for (const offset of offsets) {
+          expect([
+            offset,
+            nearestItemIndex(items, offset, viewportSize),
+          ]).toEqual([
+            offset,
+            linearNearestItemIndex(items, offset, viewportSize),
+          ]);
+        }
+      });
+    }
+
+    it("agrees at every centre and midpoint of a uniform layout", () => {
+      const items = computeLayout([100, 100, 100, 100, 100]);
+
+      // 0.5px steps walk over both exact centres and exact midpoints.
+      for (let offset = -50; offset <= 550; offset += 0.5) {
+        expect(nearestItemIndex(items, offset, 100)).toBe(
+          linearNearestItemIndex(items, offset, 100),
+        );
+      }
+    });
   });
 });
