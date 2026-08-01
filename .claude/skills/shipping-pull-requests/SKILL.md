@@ -58,7 +58,9 @@ cd src-tauri && mise exec -- cargo fmt --check && mise exec -- cargo clippy -- -
 .claude/skills/shipping-pull-requests/scripts/wait-for-review.sh <PR番号> [タイムアウト秒]
 ```
 
-必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になり、かつ **現在の HEAD コミットに対する** CodeRabbit のレビューが提出されるまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI が失敗またはスキップ。
+必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になり、かつ **現在の HEAD コミットに対する** CodeRabbit のレビューが完了するまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI かレビューが失敗。
+
+レビューの完了判定には `CodeRabbit` という **commit status**（`Review in progress` → `success`）を使う。レビューの存在だけで判定すると、本文が空のレビューが先に API に現れるため、まだ進行中なのに完了と誤認する。`gh pr checks` には出るが check-run ではなく commit status なので、`/commits/<sha>/status` で取る。
 
 必須ジョブ名はスクリプト内の `REQUIRED_CHECKS` にある。`.github/workflows/ci.yml` のジョブ名を変えたらここも直す（放置するとタイムアウトするまで `missing` のまま待ち続ける）。
 
@@ -144,14 +146,18 @@ gh api graphql -f query='
 push すると CodeRabbit が増分レビューを返すので、2 に戻る。次のすべてを満たしたら完了:
 
 - `list-open-comments.sh` の出力が空
+- `wait-for-review.sh` が `0` で終わっている（= `CodeRabbit` の commit status が `success`）
 - 直近の CodeRabbit レビューに新しい指摘がない（レビュー本文が空、または `Actionable comments posted: 0`）
 - CI が全て通過
+
+commit status が `pending` の間は判断しない。レビューがまだ出ていないだけを「指摘なし」と読むと、収束していないのに完了と報告することになる。
 
 同じ指摘が3周以上続く、または CodeRabbit と自分の判断が食い違って決着しない場合は、ループを止めてユーザーに判断を仰ぐ。
 
 ## リポジトリ固有のメモ
 
 - CodeRabbit App はインストール済み。設定は `.coderabbit.yaml`（レビュー言語は日本語、`profile: chill`、Request changes なし）
+- CodeRabbit は `commit_status`（既定で有効）により `CodeRabbit` という commit status を出す。これが `pending` の間はまだレビュー中。**新しいレビューが来ていないのではなく、まだ出ていない**ので待つ
 - Finishing Touches は全て無効化済み。CodeRabbit はコードを書かない。修正は必ず自分で入れる
 - Copilot もレビューを付けることがあるが、毎回は走らない。待機条件には含めない。付いていたら同じ手順で対応する
 - CI は macOS ランナーで3ジョブ。Tauri build は frontend / rust の後に走るため全体で数分かかる
