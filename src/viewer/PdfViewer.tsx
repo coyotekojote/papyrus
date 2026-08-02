@@ -426,9 +426,15 @@ export function PdfViewer({
    * `range`, in the direction the reader is scrolling (issue #12). Runs one
    * page per idle slot, chained until the target set is warm or a new range
    * (a further scroll, a zoom, a document switch) supersedes it — never
-   * competing with the visible pages for the renderer's attention, and never
    * touching the DOM: a prefetched page only ever reaches the screen through
    * `PageCanvas`'s own cache hit.
+   *
+   * Each warmed page's own render goes through `renderQueue` at `"prefetch"`
+   * priority (issue #35), the lowest of the three — so even though this
+   * effect still only ever has *one* prefetch render in flight at a time
+   * (the idle pacing below is unchanged), that one render never competes
+   * with a `"visible"` or `"overscan"` page still waiting on the same
+   * single-slot worker for the renderer's attention.
    */
   useEffect(() => {
     if (total === 0) return;
@@ -485,12 +491,13 @@ export function PdfViewer({
       // of `display: block` and throw off the page's baseline spacing the
       // moment the reader scrolls to it.
       canvas.className = "page__canvas";
-      doc
-        .renderPage(pageNumber, {
-          scale: zoom,
-          canvas,
-          signal: controller.signal,
-        })
+      renderQueue
+        .schedule(
+          "prefetch",
+          (signal) =>
+            doc.renderPage(pageNumber, { scale: zoom, canvas, signal }),
+          controller.signal,
+        )
         .then(() => {
           if (controller.signal.aborted) return;
           // A prefetch warms an offscreen canvas nobody is necessarily
@@ -527,7 +534,17 @@ export function PdfViewer({
       controller.abort();
       if (idleHandle !== null) cancelIdle(idleHandle);
     };
-  }, [rangeStart, rangeEnd, layout, domSpreads, doc, cache, zoom, total]);
+  }, [
+    rangeStart,
+    rangeEnd,
+    layout,
+    domSpreads,
+    doc,
+    cache,
+    zoom,
+    total,
+    renderQueue,
+  ]);
 
   // Measure the scroll viewport; every layout number below depends on it.
   useEffect(() => {

@@ -632,6 +632,64 @@ describe("PdfViewer", () => {
 
       resolvePage(12);
     });
+
+    it("hands a prefetch target to the renderer only after the visible and overscan work ahead of it", async () => {
+      const doc = fakeDoc(20);
+      const order: number[] = [];
+      const gates = new Map<number, () => void>();
+      // Every render is held open until this test resolves it by hand, same
+      // as above — the fake stands in for the worker being busy, which is
+      // exactly the situation the prefetch effect must yield to.
+      vi.mocked(doc.renderPage).mockImplementation(
+        (pageNumber: number) =>
+          new Promise<void>((resolve) => {
+            order.push(pageNumber);
+            gates.set(pageNumber, resolve);
+          }),
+      );
+      const resolvePage = (pageNumber: number) => {
+        const resolve = gates.get(pageNumber);
+        if (!resolve) {
+          throw new Error(`renderPage(${pageNumber}) was never called`);
+        }
+        resolve();
+      };
+
+      render(
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(20)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Page 1 (domIndex 0, visible) starts immediately; page 2 (domIndex 1,
+      // overscan) queues behind it.
+      await waitFor(() => expect(order).toEqual([1]));
+
+      // Let the prefetch effect's idle callback fire (a `setTimeout`
+      // fallback in jsdom — see `scheduleIdle`) so it reaches page 3, the
+      // one target beyond the initial overscan range with `PREFETCH_COUNT`
+      // halved for a stationary reader (`direction: "none"`).
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // Reaching the queue is not the same as reaching the renderer: page 1
+      // is still the only call `doc.renderPage` has actually seen.
+      expect(order).toEqual([1]);
+
+      resolvePage(1);
+      await waitFor(() => expect(order).toEqual([1, 2]));
+
+      resolvePage(2);
+      // Only once both the visible and overscan work ahead of it have
+      // drained does the prefetch target reach the renderer — issue #35's
+      // whole point is that a prefetch never gets there first.
+      await waitFor(() => expect(order).toEqual([1, 2, 3]));
+
+      resolvePage(3);
+    });
   });
 
   describe("wheel scrolling", () => {
