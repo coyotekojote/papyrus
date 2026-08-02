@@ -209,11 +209,19 @@ export function highlightAtPoint(
   return null;
 }
 
-/** Markdown blockquote for notes.md, readable by Obsidian and friends. */
-export function formatHighlightQuote(highlight: Highlight): string {
-  const quoted = highlight.text
+/**
+ * Markdown blockquote for notes.md, readable by Obsidian and friends. Shared
+ * with the translation note (issue #10), so an extract cites its page the same
+ * way whichever action put it there.
+ */
+export function formatQuote(text: string, page: number): string {
+  const quoted = text
     .split("\n")
     .map((line) => (line === "" ? ">" : `> ${line}`))
     .join("\n");
-  return `${quoted}\n>\n> — p.${highlight.page}`;
+  return `${quoted}\n>\n> — p.${page}`;
+}
+
+export function formatHighlightQuote(highlight: Highlight): string {
+  return formatQuote(highlight.text, highlight.page);
 }

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { toError } from "./backend-error";
+import { toError } from "../backend-error";
 import type { TranslationProviderId } from "./settings";
 
 /**

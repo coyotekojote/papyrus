@@ -35,6 +35,45 @@ describe("backend errors", () => {
     );
   });
 
+  it("points a missing key and an unset model at the settings screen", () => {
+    expect(describeError({ kind: "missingKey" })).toBe(
+      "APIキーが設定されていません。設定画面で登録してください",
+    );
+    expect(describeError({ kind: "modelRequired" })).toBe(
+      "翻訳に使うモデルが未設定です。設定画面で指定してください",
+    );
+  });
+
+  it("says how much of the selection was too much", () => {
+    expect(describeError({ kind: "textTooLong", limit: 4000 })).toBe(
+      "選択が長すぎます（上限 4000 文字）。範囲を狭めてください",
+    );
+  });
+
+  it("tells a retryable translation failure from a dead end", () => {
+    // Waiting helps with these two…
+    expect(describeError({ kind: "rateLimited" })).toContain("しばらく待って");
+    expect(describeError({ kind: "unavailable", status: 503 })).toBe(
+      "翻訳サービスが応答しませんでした（HTTP 503）。時間をおいて再試行してください",
+    );
+    // …but not with a rejected key or a refusal.
+    expect(describeError({ kind: "unauthorized" })).toBe(
+      "APIキーが拒否されました。キーと利用枠を確認してください",
+    );
+    expect(describeError({ kind: "refused" })).toBe(
+      "このテキストの翻訳は拒否されました",
+    );
+  });
+
+  it("keeps the provider's own wording for a rejected request", () => {
+    expect(describeError({ kind: "badRequest", message: "model: nope" })).toBe(
+      "翻訳を実行できませんでした: model: nope",
+    );
+    expect(describeError({ kind: "network", message: "timed out" })).toBe(
+      "翻訳サービスに接続できませんでした: timed out",
+    );
+  });
+
   it("still says something useful for a kind it has no wording for", () => {
     expect(describeError({ kind: "somethingNew", message: "details" })).toBe(
       "somethingNew: details",

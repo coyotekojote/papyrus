@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiKeyStatus, deleteApiKey, saveApiKey } from "./api-keys";
-import { describeError } from "./backend-error";
+import { describeError } from "../backend-error";
 import type { TranslationProviderId } from "./settings";
 
 /**
