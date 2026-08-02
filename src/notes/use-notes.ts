@@ -6,6 +6,10 @@ import {
   type Clip,
   type Highlight,
 } from "../files/sidecar";
+import {
+  formatTranslationNote,
+  type TranslationNote,
+} from "../translation/format";
 import { formatClipImage } from "../viewer/clips";
 import { formatHighlightQuote } from "../viewer/highlights";
 import { appendBlock } from "./markdown";
@@ -48,6 +52,8 @@ export interface UseNotesResult {
   insertQuote(highlight: Highlight): void;
   /** Appends a clip to the note as a markdown image, relative to the sidecar. */
   insertImage(clip: Clip): void;
+  /** Appends a translation to the note, quoting the original above it. */
+  insertTranslation(note: TranslationNote): void;
   /** Conflict resolution: overwrite the file with what is in the editor. */
   keepLocal(): void;
   /** Conflict resolution: take the file's content, dropping local edits. */
@@ -270,6 +276,11 @@ export function useNotes(pdfPath: string): UseNotesResult {
     insertImage: useCallback(
       (clip: Clip) =>
         edit((current) => appendBlock(current, formatClipImage(clip))),
+      [edit],
+    ),
+    insertTranslation: useCallback(
+      (note: TranslationNote) =>
+        edit((current) => appendBlock(current, formatTranslationNote(note))),
       [edit],
     ),
     keepLocal: useCallback(() => {

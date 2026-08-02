@@ -19,6 +19,7 @@ import {
 } from "../files/sidecar";
 import { SAVE_DEBOUNCE_MS } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
+import { translate } from "../translation/translate";
 import { PdfViewer } from "./PdfViewer";
 import type { Binding, ViewMode } from "./spreads";
 
@@ -33,6 +34,12 @@ vi.mock("../files/sidecar", async (importActual) => {
     saveClip: vi.fn(),
     loadClip: vi.fn(),
   };
+});
+
+vi.mock("../translation/translate", async (importActual) => {
+  const actual =
+    await importActual<typeof import("../translation/translate")>();
+  return { ...actual, translate: vi.fn() };
 });
 
 const PAGE_COUNT = 8;
@@ -81,6 +88,7 @@ beforeEach(() => {
   vi.mocked(loadNotes).mockReset();
   vi.mocked(saveNotes).mockReset();
   vi.mocked(saveClip).mockReset();
+  vi.mocked(translate).mockReset();
   mockSidecar();
 });
 
@@ -1328,6 +1336,165 @@ describe("PdfViewer", () => {
       expect(
         screen.queryByRole("textbox", { name: "メモ (markdown)" }),
       ).toBeNull();
+    });
+  });
+
+  describe("translation", () => {
+    /** Selects `selected` on page 1, with the rest of the line around it. */
+    function selectOnPage(before: string, selected: string, after: string) {
+      const viewer = renderViewer();
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      const textLayer = page.querySelector(".textLayer");
+      if (!textLayer) throw new Error("page 1 has no text layer");
+      const spans = [before, selected, after].map((text) => {
+        const span = document.createElement("span");
+        span.textContent = text;
+        textLayer.append(span);
+        return span;
+      });
+
+      // jsdom lays nothing out; every range reports the same single rect.
+      Range.prototype.getClientRects = () =>
+        [{ left: 10, top: 28, width: 50, height: 3 }] as unknown as DOMRectList;
+
+      const range = document.createRange();
+      range.setStart(spans[1].firstChild as Node, 0);
+      range.setEnd(spans[1].firstChild as Node, selected.length);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      return viewer;
+    }
+
+    function translated(text: string) {
+      return {
+        text,
+        provider: "claude" as const,
+        model: "claude-opus-5",
+        targetLanguage: "ja",
+      };
+    }
+
+    it("sends the selection with the page text around it", async () => {
+      vi.mocked(translate).mockResolvedValue(
+        translated("必要なのは注意だけ。"),
+      );
+      const { user } = selectOnPage(
+        "In this work, ",
+        "attention is all you need",
+        ". We show that",
+      );
+
+      await user.click(screen.getByRole("button", { name: "翻訳" }));
+
+      expect(
+        await screen.findByText("必要なのは注意だけ。"),
+      ).toBeInTheDocument();
+      expect(translate).toHaveBeenCalledWith({
+        text: "attention is all you need",
+        contextBefore: "In this work, ",
+        contextAfter: ". We show that",
+      });
+    });
+
+    it("keeps the reader informed while the request is in flight", async () => {
+      vi.mocked(translate).mockReturnValue(new Promise(() => {}));
+      const { user } = selectOnPage("", "selected text", "");
+
+      await user.click(screen.getByRole("button", { name: "翻訳" }));
+
+      expect(screen.getByText("翻訳しています…")).toBeInTheDocument();
+      // The popup it was started from is gone: the panel replaces it.
+      expect(
+        screen.queryByRole("toolbar", { name: "選択したテキスト" }),
+      ).toBeNull();
+    });
+
+    it("puts the original and the translation into the note", async () => {
+      vi.mocked(translate).mockResolvedValue(
+        translated("必要なのは注意だけ。"),
+      );
+      const { user } = selectOnPage("", "Attention is all you need.", "");
+      await user.click(screen.getByRole("button", { name: "翻訳" }));
+      await screen.findByText("必要なのは注意だけ。");
+
+      await user.click(screen.getByRole("button", { name: "メモに挿入" }));
+
+      const editor = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+        name: "メモ (markdown)",
+      });
+      await waitFor(() =>
+        expect(editor.value).toContain("> Attention is all you need."),
+      );
+      expect(editor.value).toContain("> — p.1");
+      expect(editor.value).toContain(
+        "**訳（日本語）**\n\n必要なのは注意だけ。",
+      );
+    });
+
+    it("explains a failure and runs the same request again on request", async () => {
+      vi.mocked(translate)
+        .mockRejectedValueOnce({ kind: "unavailable", status: 503 })
+        .mockResolvedValueOnce(translated("再試行の訳"));
+      const { user } = selectOnPage("", "selected text", "");
+
+      await user.click(screen.getByRole("button", { name: "翻訳" }));
+      expect(await screen.findByText(/HTTP 503/)).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "再試行" }));
+
+      expect(await screen.findByText("再試行の訳")).toBeInTheDocument();
+      expect(vi.mocked(translate).mock.calls[1][0].text).toBe("selected text");
+    });
+
+    it("translates a saved highlight from its own popup", async () => {
+      vi.mocked(translate).mockResolvedValue(translated("ハイライトの訳"));
+      mockSidecar({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1, text: "保存済みの本文" })],
+      });
+      const { user } = renderViewer();
+      const page = document.querySelector<HTMLElement>(
+        '.scroller .page[data-page="1"]',
+      );
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+      await waitFor(() =>
+        expect(document.querySelector(".page__highlight")).not.toBeNull(),
+      );
+
+      // Inside the highlight's rect (x .1–.6, y .2–.22 of a 100x140 page).
+      pointerGesture(page, { x: 20, y: 30 }, { x: 20, y: 30 });
+      await user.click(screen.getByRole("button", { name: "翻訳" }));
+
+      expect(await screen.findByText("ハイライトの訳")).toBeInTheDocument();
+      // A stored extract has no page around it any more: only the text goes.
+      expect(translate).toHaveBeenCalledWith({
+        text: "保存済みの本文",
+        contextBefore: "",
+        contextAfter: "",
+      });
+    });
+
+    it("closes the panel when the reader is done with it", async () => {
+      vi.mocked(translate).mockResolvedValue(
+        translated("必要なのは注意だけ。"),
+      );
+      const { user } = selectOnPage("", "selected text", "");
+      await user.click(screen.getByRole("button", { name: "翻訳" }));
+      await screen.findByText("必要なのは注意だけ。");
+
+      await user.click(screen.getByRole("button", { name: "翻訳を閉じる" }));
+
+      expect(screen.queryByRole("dialog", { name: "翻訳" })).toBeNull();
     });
   });
 });

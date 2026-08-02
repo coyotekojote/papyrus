@@ -1,6 +1,7 @@
 pub mod keychain;
 pub mod settings;
 pub mod sidecar;
+pub mod translation;
 
 /// Builds a friendly greeting for the given name.
 ///
@@ -35,6 +36,7 @@ pub fn run() {
             keychain::save_api_key,
             keychain::delete_api_key,
             keychain::api_key_status,
+            translation::translate,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

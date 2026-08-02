@@ -15,12 +15,19 @@ import {
 import { NotesPanel } from "../notes/NotesPanel";
 import { useNotes } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
+import {
+  NO_CONTEXT,
+  surroundingText,
+  type SelectionContext,
+} from "../translation/context";
+import { TranslationPanel } from "../translation/TranslationPanel";
+import { useTranslation } from "../translation/use-translation";
 import { HighlightsPanel } from "./HighlightsPanel";
 import { OutlineSidebar } from "./OutlineSidebar";
 import { PageCanvas } from "./PageCanvas";
 import {
-  CreateHighlightPopup,
   HighlightActionsPopup,
+  SelectionActionsPopup,
   type PopupPosition,
 } from "./SelectionPopup";
 import { ThumbnailList } from "./ThumbnailList";
@@ -107,6 +114,8 @@ type Popup =
       page: number;
       rects: NormalizedRect[];
       text: string;
+      /** Page text either side of the selection, for translating it (#10). */
+      context: SelectionContext;
       position: PopupPosition;
     }
   | { kind: "actions"; highlight: Highlight; position: PopupPosition };
@@ -196,6 +205,10 @@ export function PdfViewer({
   const [insertRefused, setInsertRefused] = useState(false);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
+  /** Where the translation panel sits: where the selection it came from was. */
+  const [translationAt, setTranslationAt] = useState<PopupPosition | null>(
+    null,
+  );
 
   // Changing the setting is a deliberate act on the app, so it lands on the
   // document being read as well — waiting for the next one to open would look
@@ -206,6 +219,7 @@ export function PdfViewer({
 
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
+  const translation = useTranslation();
   const highlightsByPage = useMemo(() => {
     const byPage = new Map<number, Highlight[]>();
     for (const highlight of annotations.annotations.highlights) {
@@ -531,6 +545,11 @@ export function PdfViewer({
             page: Number(selectedPage.dataset.page),
             rects,
             text,
+            // Read here, while the selection is still on screen: by the time
+            // the reader picks "翻訳" the range may be gone.
+            context: textLayer
+              ? surroundingText(onPage, textLayer)
+              : NO_CONTEXT,
             position,
           });
           return;
@@ -612,6 +631,49 @@ export function PdfViewer({
     (highlight: Highlight) => appendToNotes(() => notes.insertQuote(highlight)),
     [appendToNotes, notes],
   );
+
+  /**
+   * Translates a piece of the document (issue #10). The panel opens where the
+   * popup was, and the request runs while the reader keeps reading.
+   */
+  const startTranslation = useCallback(
+    (
+      text: string,
+      page: number,
+      context: SelectionContext,
+      position: PopupPosition,
+    ) => {
+      setTranslationAt(position);
+      translation.start({
+        input: {
+          text,
+          contextBefore: context.before,
+          contextAfter: context.after,
+        },
+        page,
+      });
+      setPopup(null);
+      window.getSelection()?.removeAllRanges();
+    },
+    [translation],
+  );
+
+  /**
+   * Keeps the original above the translation in the note: a translation on its
+   * own cannot be checked against the paper later.
+   */
+  const insertTranslationToNotes = useCallback(() => {
+    const current = translation.state;
+    if (current.status !== "done") return;
+    appendToNotes(() =>
+      notes.insertTranslation({
+        original: current.source.input.text,
+        translated: current.result.text,
+        page: current.source.page,
+        targetLanguage: current.result.targetLanguage,
+      }),
+    );
+  }, [appendToNotes, notes, translation.state]);
 
   /** Why the note cannot take an image right now, or null when it can. */
   const notesRefusal = useCallback((): NotesRefusal | null => {
@@ -1137,9 +1199,17 @@ export function PdfViewer({
         ) : null}
 
         {popup?.kind === "create" ? (
-          <CreateHighlightPopup
+          <SelectionActionsPopup
             position={popup.position}
             onPick={createHighlight}
+            onTranslate={() =>
+              startTranslation(
+                popup.text,
+                popup.page,
+                popup.context,
+                popup.position,
+              )
+            }
             onDismiss={() => setPopup(null)}
           />
         ) : null}
@@ -1150,6 +1220,16 @@ export function PdfViewer({
               copyToClipboard(popup.highlight.text);
               setPopup(null);
             }}
+            // A saved highlight has no page around it any more, so it is
+            // translated on its own — the extract is what was worth keeping.
+            onTranslate={() =>
+              startTranslation(
+                popup.highlight.text,
+                popup.highlight.page,
+                NO_CONTEXT,
+                popup.position,
+              )
+            }
             onInsertToNotes={() => {
               insertToNotes(popup.highlight);
               setPopup(null);
@@ -1159,6 +1239,23 @@ export function PdfViewer({
               setPopup(null);
             }}
             onDismiss={() => setPopup(null)}
+          />
+        ) : null}
+
+        {/* Left up until it is closed, unlike the popups: it is a result to
+            read and act on, not a toolbar that follows the pointer. */}
+        {translation.state.status !== "idle" && translationAt ? (
+          <TranslationPanel
+            position={translationAt}
+            state={translation.state}
+            onCopy={() => {
+              if (translation.state.status === "done") {
+                copyToClipboard(translation.state.result.text);
+              }
+            }}
+            onInsertToNotes={insertTranslationToNotes}
+            onRetry={translation.retry}
+            onDismiss={translation.dismiss}
           />
         ) : null}
       </div>

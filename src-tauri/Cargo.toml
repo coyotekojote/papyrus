@@ -20,6 +20,14 @@ keyring = { version = "3", features = [
   "windows-native",
   "sync-secret-service",
 ] }
+# Translation providers are called from Rust, so the API key never reaches the
+# WebView (see translation.rs). rustls rather than the platform TLS stack: one
+# behaviour to reason about on every target, and no OpenSSL to build.
+reqwest = { version = "0.12", default-features = false, features = [
+  "http2",
+  "json",
+  "rustls-tls",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

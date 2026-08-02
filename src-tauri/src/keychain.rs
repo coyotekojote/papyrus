@@ -51,6 +51,12 @@ pub trait KeyStore {
     /// Removes the entry; missing is success, so deleting twice is harmless.
     fn delete(&self, provider: TranslationProvider) -> Result<()>;
     fn contains(&self, provider: TranslationProvider) -> Result<bool>;
+    /// The stored key, or None when the provider has none.
+    ///
+    /// Rust-side only: the translation layer (`translation.rs`) needs the key
+    /// to sign its HTTP request. No Tauri command exposes this, which is what
+    /// keeps the key out of the WebView.
+    fn get(&self, provider: TranslationProvider) -> Result<Option<String>>;
 }
 
 /// The real OS keychain.
@@ -117,6 +123,14 @@ impl KeyStore for OsKeychain {
             Err(err) => Err(into_error(err)),
         }
     }
+
+    fn get(&self, provider: TranslationProvider) -> Result<Option<String>> {
+        match Self::entry(provider)?.get_password() {
+            Ok(key) => Ok(Some(key)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(into_error(err)),
+        }
+    }
 }
 
 /// The provider an id names, or `UnknownProvider`. Ids arrive from the
@@ -152,6 +166,14 @@ pub fn api_key_status_in(store: &dyn KeyStore) -> Result<Vec<ApiKeyStatus>> {
             })
         })
         .collect()
+}
+
+/// The key a provider will be called with, or None when none is stored.
+///
+/// Deliberately not a Tauri command: this is for `translation.rs`, which makes
+/// the request on this side of the IPC boundary.
+pub fn api_key_in(store: &dyn KeyStore, provider: TranslationProvider) -> Result<Option<String>> {
+    store.get(provider)
 }
 
 // --- Tauri commands ---
@@ -228,6 +250,11 @@ mod tests {
         fn contains(&self, provider: TranslationProvider) -> Result<bool> {
             self.check()?;
             Ok(self.keys.borrow().contains_key(provider.id()))
+        }
+
+        fn get(&self, provider: TranslationProvider) -> Result<Option<String>> {
+            self.check()?;
+            Ok(self.keys.borrow().get(provider.id()).cloned())
         }
     }
 
@@ -331,6 +358,21 @@ mod tests {
         );
         let json = serde_json::to_string(&status).unwrap();
         assert!(!json.contains("sk-test-123"), "the key leaked into {json}");
+    }
+
+    #[test]
+    fn reading_a_key_returns_it_only_for_the_provider_it_was_stored_under() {
+        let store = FakeStore::default();
+        save_api_key_in(&store, "claude", "sk-ant-123").unwrap();
+
+        assert_eq!(
+            api_key_in(&store, TranslationProvider::Claude).unwrap(),
+            Some("sk-ant-123".to_string()),
+        );
+        assert_eq!(
+            api_key_in(&store, TranslationProvider::Openai).unwrap(),
+            None
+        );
     }
 
     #[test]

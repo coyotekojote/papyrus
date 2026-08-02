@@ -40,22 +40,24 @@ function PopupShell({ position, label, onDismiss, children }: PopupShellProps) {
   );
 }
 
-interface CreateHighlightPopupProps {
+interface SelectionActionsPopupProps {
   position: PopupPosition;
   onPick: (colorId: string) => void;
+  onTranslate: () => void;
   onDismiss: () => void;
 }
 
-/** Shown over a fresh text selection: pick a color to create the highlight. */
-export function CreateHighlightPopup({
+/** Shown over a fresh text selection: highlight it in a color, or translate it. */
+export function SelectionActionsPopup({
   position,
   onPick,
+  onTranslate,
   onDismiss,
-}: CreateHighlightPopupProps) {
+}: SelectionActionsPopupProps) {
   return (
     <PopupShell
       position={position}
-      label="ハイライトを作成"
+      label="選択したテキスト"
       onDismiss={onDismiss}
     >
       {HIGHLIGHT_COLORS.map((color) => (
@@ -68,6 +70,9 @@ export function CreateHighlightPopup({
           onClick={() => onPick(color.id)}
         />
       ))}
+      <button type="button" className="popup__action" onClick={onTranslate}>
+        翻訳
+      </button>
     </PopupShell>
   );
 }
@@ -75,6 +80,7 @@ export function CreateHighlightPopup({
 interface HighlightActionsPopupProps {
   position: PopupPosition;
   onCopy: () => void;
+  onTranslate: () => void;
   onInsertToNotes: () => void;
   onDelete: () => void;
   onDismiss: () => void;
@@ -84,6 +90,7 @@ interface HighlightActionsPopupProps {
 export function HighlightActionsPopup({
   position,
   onCopy,
+  onTranslate,
   onInsertToNotes,
   onDelete,
   onDismiss,
@@ -96,6 +103,9 @@ export function HighlightActionsPopup({
     >
       <button type="button" className="popup__action" onClick={onCopy}>
         コピー
+      </button>
+      <button type="button" className="popup__action" onClick={onTranslate}>
+        翻訳
       </button>
       <button type="button" className="popup__action" onClick={onInsertToNotes}>
         メモに挿入

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Binding, ViewMode } from "../viewer/spreads";
-import { toError, type SettingsOperation } from "./backend-error";
+import { toError, type SettingsOperation } from "../backend-error";
 
 /**
  * App-wide settings (issue #9).
