@@ -8,7 +8,10 @@ const readPdfFile = vi.hoisted(() => vi.fn());
 const loadDefaultRenderer = vi.hoisted(() => vi.fn());
 
 vi.mock("./files/open", () => ({ readPdfFile }));
-vi.mock("./pdf", () => ({ loadDefaultRenderer }));
+vi.mock("./pdf", async (importActual) => {
+  const actual = await importActual<typeof import("./pdf")>();
+  return { ...actual, loadDefaultRenderer };
+});
 
 const FILES: RecentFile[] = [
   { path: "/a/Report.pdf", name: "Report.pdf", openedAt: 1000 },

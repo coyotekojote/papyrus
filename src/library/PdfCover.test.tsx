@@ -1,12 +1,18 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_RECENT_FILES } from "../files/recent";
 import { PdfCover } from "./PdfCover";
 
 const readPdfFile = vi.hoisted(() => vi.fn());
 const loadDefaultRenderer = vi.hoisted(() => vi.fn());
 
 vi.mock("../files/open", () => ({ readPdfFile }));
-vi.mock("../pdf", () => ({ loadDefaultRenderer }));
+// Only the renderer is faked: the cover cache is a real `LruCache`, so the
+// eviction this file asserts on is the one the component actually gets.
+vi.mock("../pdf", async (importActual) => {
+  const actual = await importActual<typeof import("../pdf")>();
+  return { ...actual, loadDefaultRenderer };
+});
 
 function fakeDoc(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -103,5 +109,37 @@ describe("PdfCover", () => {
     await waitFor(() =>
       expect(reads).toEqual(["/a/queued-one.pdf", "/a/queued-two.pdf"]),
     );
+  });
+
+  it("re-reads a cover only once it has been pushed out of the cache", async () => {
+    readPdfFile.mockResolvedValue(new Uint8Array([1]));
+    loadDefaultRenderer.mockResolvedValue({ open: async () => fakeDoc() });
+
+    const readsOf = (path: string) =>
+      readPdfFile.mock.calls.filter(([read]) => read === path).length;
+
+    /** Mounts a cover, waits for it to paint, then takes it back down. */
+    const paint = async (path: string) => {
+      const view = render(<PdfCover path={path} name="doc.pdf" />);
+      await waitFor(() =>
+        expect(document.querySelector("img.cover__image")).not.toBeNull(),
+      );
+      view.unmount();
+    };
+
+    await paint("/lru/first.pdf");
+    expect(readsOf("/lru/first.pdf")).toBe(1);
+
+    // Still cached, so showing it again costs no read at all.
+    await paint("/lru/first.pdf");
+    expect(readsOf("/lru/first.pdf")).toBe(1);
+
+    // A full library's worth of other covers is enough to push it out.
+    for (let index = 0; index < MAX_RECENT_FILES; index += 1) {
+      await paint(`/lru/filler-${index}.pdf`);
+    }
+
+    await paint("/lru/first.pdf");
+    expect(readsOf("/lru/first.pdf")).toBe(2);
   });
 });

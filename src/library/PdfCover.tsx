@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react";
 import { readPdfFile } from "../files/open";
-import { loadDefaultRenderer } from "../pdf";
+import { MAX_RECENT_FILES } from "../files/recent";
+import { LruCache, loadDefaultRenderer } from "../pdf";
 
 /** Width a cover is rendered at, in CSS pixels. */
 const COVER_WIDTH = 160;
 
 /**
- * Rendered covers, keyed by file path, kept for the app's lifetime. A cover
- * costs a full document open just to read its first page, so once painted it
- * is never redone — including across a grid/list toggle that unmounts and
- * remounts every tile.
+ * Rendered covers, keyed by file path. A cover costs a full document open just
+ * to read its first page, so once painted it is not redone — including across
+ * a grid/list toggle, which unmounts and remounts every tile.
+ *
+ * Held to the number of files the library can show at once: everything on
+ * screen therefore stays cached, while a path that has aged out of the recent
+ * list stops holding onto its PNG data URL.
  */
-const coverCache = new Map<string, string>();
+const coverCache = new LruCache<string, string>(MAX_RECENT_FILES);
 
 /**
  * Covers are rendered one at a time. Each one opens a document of its own, and
