@@ -1,9 +1,10 @@
 /**
  * How urgently a page needs the (single, worker-serialized) renderer's
- * attention. Ordered highest first — `"prefetch"` is not implemented by any
- * caller yet (issue #35, step 3: the idle background warm-up in
- * `PdfViewer`), but is defined here already so the ranking below never has to
- * be revisited to add it.
+ * attention. Ordered highest first. `"prefetch"` is the lowest: `PdfViewer`
+ * uses it both for the idle background warm-up (issue #35, step 3) and,
+ * temporarily, for an overscan spread while the visible range is still
+ * settling from a burst of page turns (step 4's `OVERSCAN_SETTLE_MS`
+ * debounce) — an overscan spread otherwise renders at `"overscan"`.
  */
 export type RenderPriority = "visible" | "overscan" | "prefetch";
 

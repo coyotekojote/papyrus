@@ -207,8 +207,9 @@ PR #34 の 79ce4ce で別途修正済み — こちらはあくまで「いず�
   同一優先度内は FIFO で、高優先度は常に先に dequeue される
 - `PdfViewer`（`src/viewer/PdfViewer.tsx`）は overscan 込みの `range` に加え、overscan なしの
   `strictRange` を計算する。spread が `strictRange` 内なら `"visible"`、`range` 内で
-  `strictRange` 外なら `"overscan"` を `PageCanvas` に渡す。`RenderQueue` はドキュメントの
-  寿命ぶん `useRef` で1個だけ保持する
+  `strictRange` 外なら `"overscan"` を `PageCanvas` に渡す（ただし後述のデバウンス中は
+  `"overscan"` の代わりに `"prefetch"` になる — 3値の分岐であることに注意）。`RenderQueue` は
+  ドキュメントの寿命ぶん `useRef` で1個だけ保持する
 - `PageCanvas`（`src/viewer/PageCanvas.tsx`）は `queue`/`priority` を optional props として
   受け取り、未指定なら従来どおり即座に `doc.renderPage`（`ThumbnailList` は変更していない）。
   キャッシュヒットは `RenderQueue` を経由せず、従来どおり即座に DOM へ再アタッチする

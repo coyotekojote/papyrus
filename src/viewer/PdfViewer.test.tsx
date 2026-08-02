@@ -655,6 +655,11 @@ describe("PdfViewer", () => {
         }
         resolve();
       };
+      // Only used to detect, deterministically, the moment the prefetch
+      // effect's idle callback (a `setTimeout` fallback in jsdom — see
+      // `scheduleIdle`) has reached the queue — a fixed real-time wait would
+      // either race a slow CI runner or pad every run with dead time.
+      const scheduleSpy = vi.spyOn(RenderQueue.prototype, "schedule");
 
       render(
         <PdfViewer
@@ -670,11 +675,16 @@ describe("PdfViewer", () => {
       // overscan) queues behind it.
       await waitFor(() => expect(order).toEqual([1]));
 
-      // Let the prefetch effect's idle callback fire (a `setTimeout`
-      // fallback in jsdom — see `scheduleIdle`) so it reaches page 3, the
-      // one target beyond the initial overscan range with `PREFETCH_COUNT`
-      // halved for a stationary reader (`direction: "none"`).
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      // Wait for page 3 — the one target beyond the initial overscan range
+      // with `PREFETCH_COUNT` halved for a stationary reader
+      // (`direction: "none"`) — to actually reach the queue at "prefetch"
+      // priority.
+      await waitFor(() =>
+        expect(
+          scheduleSpy.mock.calls.some((call) => call[0] === "prefetch"),
+        ).toBe(true),
+      );
+      scheduleSpy.mockRestore();
 
       // Reaching the queue is not the same as reaching the renderer: page 1
       // is still the only call `doc.renderPage` has actually seen.
@@ -693,6 +703,20 @@ describe("PdfViewer", () => {
     });
 
     it("holds overscan spreads at prefetch priority while the range keeps moving, then promotes them once it settles", async () => {
+      // This one spies on `RenderQueue.schedule` directly rather than
+      // inferring priority from `renderPage` call *order* (as the other
+      // tests in this file do): "overscan" and "prefetch" only ever differ
+      // in dequeue order when something else is *also* pending at a
+      // different tier to race against, and the only other source of a
+      // "prefetch"-tier task is the background prefetch effect, whose own
+      // `scheduleIdle` callback is inherently deferred — it always reaches
+      // the queue a tick *after* the same range's synchronously-scheduled
+      // overscan neighbours, and gets aborted-and-dropped outright by any
+      // further range change before it even gets that far (same as any
+      // other stale queued task). There is no way, using only real app
+      // effects, to get a genuine prefetch task to arrive at the queue
+      // ahead of an overscan-tier one it could be compared against — so the
+      // priority actually passed to `schedule` has to be read directly.
       const doc = fakeDoc(20);
       // Never resolves: every render sits in (or behind) the queue for the
       // whole test, so the settle transition's re-schedule is still

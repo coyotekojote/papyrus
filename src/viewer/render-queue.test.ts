@@ -167,6 +167,32 @@ describe("RenderQueue", () => {
     await pNext;
   });
 
+  it("continues to the next task after a running task's run throws synchronously (not returning a rejected promise)", async () => {
+    const queue = new RenderQueue();
+    const started: string[] = [];
+    const failure = new Error("render failed synchronously");
+    // Not `async`: throws before ever returning a promise, exercising the
+    // `Promise.resolve().then(() => task.run(...))` wrapping in `drain` —
+    // without it, this would escape as an unhandled synchronous exception
+    // instead of rejecting `pFailing` and letting the queue move on.
+    const failingSync = vi.fn((): Promise<void> => {
+      started.push("failing");
+      throw failure;
+    });
+    const next = controlledTask(started, "next");
+    const controller = new AbortController();
+
+    const pFailing = queue.schedule("visible", failingSync, controller.signal);
+    const pNext = queue.schedule("visible", next.run, controller.signal);
+
+    await expect(pFailing).rejects.toBe(failure);
+    await Promise.resolve();
+    expect(started).toEqual(["failing", "next"]);
+
+    next.resolve();
+    await pNext;
+  });
+
   it("runs several pending tasks strictly one at a time, never overlapping", async () => {
     const queue = new RenderQueue();
     let concurrent = 0;
