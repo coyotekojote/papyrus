@@ -64,10 +64,10 @@ cd src-tauri && mise exec -- cargo fmt --check && mise exec -- cargo clippy -- -
 
 state だけでは足りず `description` も見る。同じ `success` でも中身が違う。
 
-| description | 意味 | スクリプト |
-| --- | --- | --- |
-| `Review completed` | 読まれた。レビューが投稿されていなくても、指摘が無かっただけ | `0` |
-| `Review rate limited` | **読まれていない。** レート制限でレビューが飛ばされた | `3` |
+| description           | 意味                                                         | スクリプト |
+| --------------------- | ------------------------------------------------------------ | ---------- |
+| `Review completed`    | 読まれた。レビューが投稿されていなくても、指摘が無かっただけ | `0`        |
+| `Review rate limited` | **読まれていない。** レート制限でレビューが飛ばされた        | `3`        |
 
 レビューの存在は完了条件にしない。指摘ゼロだと CodeRabbit はレビューを投稿しないため、存在を必須にすると永久に完了しない。status が `$head_sha` に対して引かれている以上、`success` はそのコミットが読まれたことを意味する。
 
@@ -175,3 +175,4 @@ commit status が `pending` の間は判断しない。レビューがまだ出�
 - Finishing Touches は全て無効化済み。CodeRabbit はコードを書かない。修正は必ず自分で入れる
 - Copilot もレビューを付けることがあるが、毎回は走らない。待機条件には含めない。付いていたら同じ手順で対応する
 - CI は macOS ランナーで3ジョブ。Tauri build は frontend / rust の後に走るため全体で数分かかる
+- `format:check` は `prettier --check .` なので `.claude/**` の Markdown も対象。このスキル自身を編集したときも Frontend CI が落ちうる（表を書き足すと桁揃えを要求される）
