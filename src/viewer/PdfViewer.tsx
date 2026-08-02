@@ -59,6 +59,7 @@ import {
   spreadContentWidth,
 } from "./layout";
 import { PageRenderCache } from "./page-cache";
+import { defaultViewModeForScreen, useIsCompactScreen } from "./responsive";
 import {
   buildSpreads,
   clampSpreadIndex,
@@ -186,9 +187,15 @@ export function PdfViewer({
   onClose,
   onOpenSettings,
 }: PdfViewerProps) {
+  // Compact screens (issue #11) never start on a two-page spread: read before
+  // the view-mode state below, which needs it for its own initial value.
+  const isCompact = useIsCompactScreen();
+
   // Where the document starts; the toolbar then overrides both for this
   // document only. Changing the setting takes them back over (see below).
-  const [viewMode, setViewMode] = useState<ViewMode>(defaultViewMode);
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    defaultViewModeForScreen(defaultViewMode, isCompact),
+  );
   const [binding, setBinding] = useState<Binding>(defaultBinding);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [currentPage, setCurrentPage] = useState(1);
@@ -220,7 +227,13 @@ export function PdfViewer({
   // like the setting did nothing. Only a change moves these: the toolbar's own
   // toggles stand until the reader touches the setting again.
   useEffect(() => setBinding(defaultBinding), [defaultBinding]);
-  useEffect(() => setViewMode(defaultViewMode), [defaultViewMode]);
+  // Also re-applies when the screen crosses the compact breakpoint (a window
+  // resize, an iPad rotating): a spread that no longer fits is dropped back
+  // to single, and single goes back to the setting once there is room again.
+  useEffect(
+    () => setViewMode(defaultViewModeForScreen(defaultViewMode, isCompact)),
+    [defaultViewMode, isCompact],
+  );
 
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
