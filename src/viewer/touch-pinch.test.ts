@@ -52,4 +52,9 @@ describe("pinchZoomFromTouch", () => {
   it("a non-finite starting zoom falls back through clampZoom's default", () => {
     expect(pinchZoomFromTouch(Number.NaN, 100, 100)).toBe(1);
   });
+
+  it("a non-finite current distance leaves the zoom where it started", () => {
+    expect(pinchZoomFromTouch(1.5, 100, Number.NaN)).toBe(1.5);
+    expect(pinchZoomFromTouch(1.5, 100, Number.POSITIVE_INFINITY)).toBe(1.5);
+  });
 });

@@ -263,8 +263,15 @@ export function PdfViewer({
    * often) must not be mistaken for one of the original two.
    */
   const pinchPointersRef = useRef<Map<number, TouchPoint>>(new Map());
-  /** Set once two fingers are down; null the rest of the time. */
+  /**
+   * Set once two fingers are down; null the rest of the time. The pinch is
+   * pinned to the two pointers that started it: a third finger joining, or
+   * one of the pair being replaced mid-gesture, must not silently swap in a
+   * different pair — its distance to the survivor has nothing to do with
+   * `startDistance`, and comparing them would jolt the zoom.
+   */
   const pinchStateRef = useRef<{
+    pointers: readonly [number, number];
     startZoom: number;
     startDistance: number;
   } | null>(null);
@@ -530,17 +537,24 @@ export function PdfViewer({
         cancelPendingScroll();
       }
     };
-    // Stops the scroller's own horizontal pan while a pinch is in progress —
-    // otherwise a two-finger touch drifting sideways would scroll the track
-    // out from under the pinch at the same time as it zooms.
-    const freezeScrollForPinch = (frozen: boolean) => {
-      scroller.style.touchAction = frozen ? "none" : "";
+    // The scroller's `touch-action: pan-x` hands two-finger movement to the
+    // browser as a pan, and once the browser claims the gesture it kills the
+    // pointer stream with `pointercancel` — the pinch would die on its first
+    // move. `touch-action` is only sampled when a gesture starts, so it
+    // cannot be loosened mid-pinch; cancelling the two-finger `touchmove`
+    // itself is what keeps the gesture ours. One finger stays untouched:
+    // that is the swipe that turns pages.
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length >= 2) event.preventDefault();
     };
 
-    /** Current 1st/2nd tracked pointers, in insertion order. */
-    const trackedPoints = (): [TouchPoint, TouchPoint] | null => {
-      const points = Array.from(pinchPointersRef.current.values());
-      return points.length >= 2 ? [points[0], points[1]] : null;
+    /** The pinch's own two pointers, current positions. */
+    const pinchPoints = (state: {
+      pointers: readonly [number, number];
+    }): [TouchPoint, TouchPoint] | null => {
+      const first = pinchPointersRef.current.get(state.pointers[0]);
+      const second = pinchPointersRef.current.get(state.pointers[1]);
+      return first && second ? [first, second] : null;
     };
 
     // Any direct grab of the scroller also abandons an in-flight smooth scroll
@@ -557,14 +571,18 @@ export function PdfViewer({
         x: event.clientX,
         y: event.clientY,
       });
-      const points = trackedPoints();
-      if (points && pinchStateRef.current === null) {
+      const ids = Array.from(pinchPointersRef.current.keys());
+      if (ids.length >= 2 && pinchStateRef.current === null) {
+        const pointers = [ids[0], ids[1]] as const;
+        const state = { pointers };
+        const points = pinchPoints(state);
+        if (!points) return;
         pinchStateRef.current = {
+          pointers,
           startZoom: zoomRef.current,
           startDistance: pointerDistance(points[0], points[1]),
         };
         pinchOccurredRef.current = true;
-        freezeScrollForPinch(true);
       }
     };
 
@@ -575,8 +593,9 @@ export function PdfViewer({
         y: event.clientY,
       });
       const state = pinchStateRef.current;
-      const points = trackedPoints();
-      if (!state || !points) return;
+      if (!state) return;
+      const points = pinchPoints(state);
+      if (!points) return;
       const distance = pointerDistance(points[0], points[1]);
       setZoom(
         pinchZoomFromTouch(state.startZoom, state.startDistance, distance),
@@ -592,28 +611,31 @@ export function PdfViewer({
     const forgetPointerDown = (event: PointerEvent) => {
       pointerDownRef.current = null;
       pinchPointersRef.current.delete(event.pointerId);
-      // Below two fingers there is no pinch left to update, but the gesture
-      // is not over until every finger is up — dropping to one still-down
-      // finger must not let a third join a *new* pinch mid-gesture.
-      if (pinchPointersRef.current.size < 2) pinchStateRef.current = null;
+      // Either of the pinch's own fingers lifting ends the pinch. Fingers
+      // that were never part of it (a stray palm) come and go freely — but
+      // the gesture is not over until every finger is up, and no new pinch
+      // starts mid-gesture: `onPointerDown` alone begins one.
+      if (pinchStateRef.current?.pointers.includes(event.pointerId)) {
+        pinchStateRef.current = null;
+      }
       if (pinchPointersRef.current.size === 0) {
         pinchOccurredRef.current = false;
-        freezeScrollForPinch(false);
       }
     };
 
     scroller.addEventListener("wheel", onWheel, { passive: false });
+    scroller.addEventListener("touchmove", onTouchMove, { passive: false });
     scroller.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", forgetPointerDown);
     window.addEventListener("pointercancel", forgetPointerDown);
     return () => {
       scroller.removeEventListener("wheel", onWheel);
+      scroller.removeEventListener("touchmove", onTouchMove);
       scroller.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", forgetPointerDown);
       window.removeEventListener("pointercancel", forgetPointerDown);
-      freezeScrollForPinch(false);
     };
   }, [cancelPendingScroll]);
 

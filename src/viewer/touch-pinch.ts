@@ -19,8 +19,10 @@ export function pointerDistance(a: TouchPoint, b: TouchPoint): number {
  *
  * `startDistance` of zero (fingers landed on the same point, or the touch
  * hardware briefly reported it that way) has no ratio to compute; the zoom is
- * left where it started rather than dividing by zero. The same guard covers
- * `currentDistance`, which is clamped to zero rather than allowed negative.
+ * left where it started rather than dividing by zero. A non-finite reading on
+ * either side gets the same treatment — a glitched sample mid-gesture must
+ * not slam the zoom to an extreme. A negative `currentDistance` is clamped
+ * to zero (all the way pinched in), not allowed to flip the ratio's sign.
  */
 export function pinchZoomFromTouch(
   startZoom: number,
@@ -30,8 +32,7 @@ export function pinchZoomFromTouch(
   if (!Number.isFinite(startDistance) || startDistance <= 0) {
     return clampZoom(startZoom);
   }
-  const current = Number.isFinite(currentDistance)
-    ? Math.max(0, currentDistance)
-    : 0;
+  if (!Number.isFinite(currentDistance)) return clampZoom(startZoom);
+  const current = Math.max(0, currentDistance);
   return clampZoom(startZoom * (current / startDistance));
 }
