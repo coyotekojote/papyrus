@@ -62,7 +62,14 @@ cd src-tauri && mise exec -- cargo fmt --check && mise exec -- cargo clippy -- -
 
 レビューの完了判定には `CodeRabbit` という **commit status**（`Review in progress` → `success`）を使う。レビューの存在だけで判定すると、本文が空のレビューが先に API に現れるため、まだ進行中なのに完了と誤認する。`gh pr checks` には出るが check-run ではなく commit status なので、`/commits/<sha>/status` で取る。
 
-state だけでは足りず `description` も見る。**レート制限に当たると CodeRabbit はレビューを実行しないまま state を `success` にし、`description` に `Review rate limited` と書く**。state だけを見るとレビュー完了と区別が付かないが、実際にはそのコミットは読まれていない。スクリプトはこれを検出して `3` で抜ける。短時間に何周も回した後に起きやすい。
+state だけでは足りず `description` も見る。同じ `success` でも中身が違う。
+
+| description | 意味 | スクリプト |
+| --- | --- | --- |
+| `Review completed` | 読まれた。レビューが投稿されていなくても、指摘が無かっただけ | `0` |
+| `Review rate limited` | **読まれていない。** レート制限でレビューが飛ばされた | `3` |
+
+レビューの存在は完了条件にしない。指摘ゼロだと CodeRabbit はレビューを投稿しないため、存在を必須にすると永久に完了しない。status が `$head_sha` に対して引かれている以上、`success` はそのコミットが読まれたことを意味する。
 
 `3` で抜けたら、**それを「指摘なし」と読まない**。時間を置いてから（15 分ではまだ解けないことがある）PR に `@coderabbitai review` とコメントして依頼し直す。それでも `3` が続くなら、未レビューの差分の中身をユーザーに伝えて判断を仰ぐ。
 
@@ -151,8 +158,10 @@ push すると CodeRabbit が増分レビューを返すので、2 に戻る。�
 
 - `list-open-comments.sh` の出力が空
 - `wait-for-review.sh` が `0` で終わっている（= `CodeRabbit` の commit status が `success`）
-- 直近の CodeRabbit レビューに新しい指摘がない（レビュー本文が空、または `Actionable comments posted: 0`）
+- 直近の CodeRabbit レビューに新しい指摘がない（レビュー本文が空、`Actionable comments posted: 0`、または**レビュー自体が投稿されていない**）
 - CI が全て通過
+
+指摘が何も無いと CodeRabbit はレビューを投稿せず、commit status を `Review completed` にするだけで終わる。この場合 `gh pr view --json reviews` にそのコミットのレビューは現れないが、それは「まだ来ていない」ではなく「指摘が無かった」なので、status が権威。
 
 commit status が `pending` の間は判断しない。レビューがまだ出ていないだけを「指摘なし」と読むと、収束していないのに完了と報告することになる。`success` でも `description` が `Review rate limited` なら同じで、そのコミットはまだ読まれていない（`wait-for-review.sh` は `3` で抜ける）。
 

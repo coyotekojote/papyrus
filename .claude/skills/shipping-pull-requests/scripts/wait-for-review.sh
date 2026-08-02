@@ -90,15 +90,22 @@ while ((SECONDS < deadline)); do
         exit 2
         ;;
       success)
-        # commit_id で照合する。submitted_at の比較では、rebase や cherry-pick で
-        # コミット日時が過去のまま push された場合に旧レビューを取り違える。
+        # status は $head_sha に対して引いているので、success の時点でこの
+        # コミットは読まれている。指摘が何も無いと CodeRabbit はレビューを
+        # 投稿しないため、レビューの存在を必須にすると永久に完了しない。
+        review_done=true
+
+        # 見つかれば時刻を出す。commit_id で照合するのは、rebase や
+        # cherry-pick でコミット日時が過去のまま push された場合に
+        # submitted_at の比較だと旧レビューを取り違えるため。
         reviews="$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate --slurp 2>/dev/null || echo '[]')"
         latest="$(jq -r --arg sha "$head_sha" \
           '[.[][] | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .submitted_at != null) | .submitted_at]
            | sort | last // empty' <<<"$reviews")"
         if [[ -n "$latest" ]]; then
-          review_done=true
           echo "CodeRabbit のレビュー完了 ($latest)"
+        else
+          echo "CodeRabbit のレビュー完了 (レビューの投稿なし: $cr_description)"
         fi
         ;;
     esac
