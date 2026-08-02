@@ -4,7 +4,7 @@
  * the low-resolution stand-in for a page that has just entered view (issue
  * #37), and must reach the screen ahead of *any* other page's full render —
  * including a `"visible"` page already mid-render-queue — or the reader
- * would sit looking at a blank canvas no longer than before this existed.
+ * would sit looking at a blank canvas as long as before this existed.
  * `"prefetch"` is the lowest: `PdfViewer` uses it both for the idle
  * background warm-up (issue #35, step 3) and, temporarily, for an overscan
  * spread while the visible range is still settling from a burst of page
