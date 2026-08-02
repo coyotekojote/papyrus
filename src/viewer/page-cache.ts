@@ -9,10 +9,20 @@ interface CachedPage {
   pixels: number;
 }
 
-/** How many rendered pages to keep, as a safety valve on top of the pixel
+/**
+ * How many rendered pages to keep, as a safety valve on top of the pixel
  * budget below — a document made entirely of tiny pages could otherwise cache
- * an unbounded number of them without ever touching the budget. */
-export const DEFAULT_PAGE_CACHE_CAPACITY = 12;
+ * an unbounded number of them without ever touching the budget.
+ *
+ * Sized for the worst case a two-page spread plus prefetch can produce: up to
+ * 6 pages visible at once (3 spreads × 2 pages, `OVERSCAN = 1`) and up to 8
+ * more warmed by the prefetch (`PREFETCH_COUNT = 3` spreads ahead × 2 pages,
+ * plus 1 spread × 2 pages behind) — 14 pages that must all fit without
+ * pushing a page still on screen out of the cache (see the `onEvict` note
+ * below on why an evicted-but-visible page is a real bug, not just a wasted
+ * re-render).
+ */
+export const DEFAULT_PAGE_CACHE_CAPACITY = 16;
 
 /**
  * Total backing-store pixels the cache may hold across all its canvases, e.g.
@@ -50,9 +60,21 @@ export class PageRenderCache {
     }
     this.cache = new LruCache<number, CachedPage>(capacity, (_, entry) => {
       this.totalPixels -= entry.pixels;
-      // Release the backing store immediately instead of waiting for GC.
-      entry.canvas.width = 0;
-      entry.canvas.height = 0;
+      // `PageCanvas` keeps a cache hit's canvas mounted in the DOM directly
+      // (it does not clone it), so a canvas can be evicted from here while
+      // still being what the reader is looking at — fast page-turning can
+      // push more pages through the cache than are on screen at any instant.
+      // Zeroing the backing store of a *connected* canvas would blank a page
+      // still visible with no re-render to fix it (nothing tells `PageCanvas`
+      // its cached entry is gone). So only a canvas already detached from the
+      // DOM gets its backing store released immediately here; a connected one
+      // is freed the ordinary way, once `PageCanvas` itself unmounts it and
+      // GC reclaims it — a small, bounded delay in reclaiming memory next to
+      // blanking a page the reader has not scrolled away from.
+      if (!entry.canvas.isConnected) {
+        entry.canvas.width = 0;
+        entry.canvas.height = 0;
+      }
     });
   }
 

@@ -98,12 +98,21 @@ open + all page sizes (pre-#12 openPath blocking cost): mean=20.0ms median=12.8m
 
 ### `PageRenderCache`（描画済み canvas キャッシュ、`src/viewer/page-cache.ts`）
 
-枚数上限12はそのまま「安全弁」として残しつつ、総ピクセル数バジェット（既定
-`DEFAULT_PIXEL_BUDGET = 64,000,000` ≒ RGBA 約256MB）を追加した。`set` のたびに
+枚数上限（既定16。根拠は後述）はそのまま「安全弁」として残しつつ、総ピクセル数バジェット
+（既定 `DEFAULT_PIXEL_BUDGET = 64,000,000` ≒ RGBA 約256MB）を追加した。`set` のたびに
 `canvas.width * canvas.height` を積算し、バジェットを超えたら LRU の順で evict する。
 挿入した1枚だけでバジェットを超える場合でも、その1枚（＝直近に描画され、画面に出ている
 ページ）は破棄しない。高ズーム時にキャッシュがメモリを食い尽くすのを防ぎつつ、低ズーム時は
 枚数上限の方が効くため従来通り軽い。
+
+`PageCanvas` はキャッシュヒットした canvas をクローンせず DOM にそのまま挿すため、
+evict されたページがまだ画面に出ている（速いページめくりでは起こりうる）ことがある。
+`onEvict` は `canvas.isConnected` を見て、DOM に接続中の canvas はバッキングストアを
+ゼロ化せず（表示中のページを白くしないため。解放はそのページが実際にアンマウントされ
+GC される時点まで遅延する）、接続していない canvas だけ従来どおり即ゼロ化する。枚数上限
+16 は、見開き表示での worst case（可視 `OVERSCAN=1` で最大3スプレッド×2ページ=6、
+プリフェッチ `PREFETCH_COUNT=3` スプレッド先読み×2ページ+背後1スプレッド×2ページ=8、
+合計14）が上限内に収まるよう設定した。
 
 ### プリフェッチ（`src/viewer/virtualization.ts` の `prefetchRange`、`PdfViewer.tsx`）
 

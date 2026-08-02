@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PageRenderCache } from "./page-cache";
 
 function canvas(width = 10, height = 10): HTMLCanvasElement {
@@ -58,6 +58,39 @@ describe("PageRenderCache", () => {
 
     expect(cache.size).toBe(0);
     expect(cache.get(1, 1)).toBeUndefined();
+  });
+
+  describe("evicting a canvas still on screen", () => {
+    afterEach(() => {
+      document.body.innerHTML = "";
+    });
+
+    it("does not blank a canvas evicted while still mounted in the DOM", () => {
+      // `PageCanvas` mounts a cache hit's canvas directly, without cloning
+      // it, so an evicted-but-still-visible canvas is a real scenario, not
+      // just a hypothetical: fast page-turning can push more pages through
+      // the cache than are ever on screen at once.
+      const cache = new PageRenderCache(1);
+      const visible = canvas();
+      document.body.appendChild(visible);
+      cache.set(1, 1, visible);
+      cache.set(2, 1, canvas()); // evicts page 1's entry
+
+      expect(visible.width).toBe(10);
+      expect(visible.height).toBe(10);
+      // The entry itself is still gone — only the canvas is spared.
+      expect(cache.has(1, 1)).toBe(false);
+    });
+
+    it("still frees the backing store of an evicted canvas that is not in the DOM", () => {
+      const cache = new PageRenderCache(1);
+      const detached = canvas();
+      cache.set(1, 1, detached);
+      cache.set(2, 1, canvas()); // evicts page 1's entry
+
+      expect(detached.width).toBe(0);
+      expect(detached.height).toBe(0);
+    });
   });
 
   describe("has", () => {
