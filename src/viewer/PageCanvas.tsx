@@ -140,6 +140,12 @@ export function PageCanvas({
         .catch(() => {
           // A failed preview is not fatal — the full render below is what
           // actually matters, and it reports its own failure if it fails.
+          // Still clear the start mark, though: without this, a preview
+          // that never reaches its `then` leaves an unmeasured start mark
+          // sitting around until cleanup (or forever, if cleanup never
+          // fires for this signal — e.g. `run` itself throwing before
+          // `signal` is ever aborted).
+          clearStart(previewMark);
         });
 
     const fullCanvas = document.createElement("canvas");
@@ -155,7 +161,14 @@ export function PageCanvas({
           markEnd(fullMark);
         });
 
-    twoStageQueue.schedule("preview", renderPreview, controller.signal);
+    // `renderPreview` above already swallows its own rejection, so this
+    // never actually rejects in practice — but `schedule`'s own promise
+    // rejects too if `run` throws synchronously (see render-queue.ts), and
+    // an unawaited, unhandled rejection there would surface as a console
+    // warning nobody is listening for. Nothing here needs the result.
+    twoStageQueue
+      .schedule("preview", renderPreview, controller.signal)
+      .catch(() => {});
     const fullTask = twoStageQueue.schedule(
       priority,
       renderFull,

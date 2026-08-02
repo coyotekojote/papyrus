@@ -2,9 +2,20 @@ import { render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { previewScale } from "../pdf/canvas-scale";
 import type { PdfDocumentHandle } from "../pdf";
+import { clearStart, markStart } from "../perf/marks";
 import { PageCanvas } from "./PageCanvas";
 import { PageRenderCache } from "./page-cache";
 import { RenderQueue } from "./render-queue";
+
+vi.mock("../perf/marks", async (importActual) => {
+  const actual = await importActual<typeof import("../perf/marks")>();
+  return {
+    ...actual,
+    markStart: vi.fn(actual.markStart),
+    markEnd: vi.fn(actual.markEnd),
+    clearStart: vi.fn(actual.clearStart),
+  };
+});
 
 /** A page size large enough that its full render exceeds the preview's pixel
  * budget (`PREVIEW_MAX_PIXELS`), so `previewScale` returns a real scale
@@ -38,6 +49,8 @@ beforeEach(() => {
     value: 1,
     configurable: true,
   });
+  vi.mocked(markStart).mockClear();
+  vi.mocked(clearStart).mockClear();
 });
 
 afterEach(() => {
@@ -123,6 +136,44 @@ describe("PageCanvas", () => {
     if (pScale !== null) {
       expect(cache.get(1, pScale)).toBeUndefined();
     }
+  });
+
+  it("clears the preview's perf mark instead of leaving it unmeasured when the preview render fails", async () => {
+    const doc = fakeDoc();
+    let call = 0;
+    vi.mocked(doc.renderPage).mockImplementation(async () => {
+      call += 1;
+      // The preview is always the first call to reach the renderer (it
+      // outranks the full render in the queue) — failing it, specifically,
+      // is what this test needs; the full render below must still succeed
+      // so nothing here depends on the (unrelated) full-render error path.
+      if (call === 1) throw new Error("preview render failed");
+    });
+    const cache = new PageRenderCache();
+    const queue = new RenderQueue();
+
+    render(
+      <PageCanvas
+        doc={doc}
+        cache={cache}
+        pageNumber={1}
+        scale={2}
+        width={LARGE_WIDTH}
+        height={LARGE_HEIGHT}
+        queue={queue}
+        priority="visible"
+      />,
+    );
+
+    await waitFor(() =>
+      expect(vi.mocked(clearStart)).toHaveBeenCalledWith(
+        "viewer:preview-shown:1",
+      ),
+    );
+    // The full render's own mark was never touched by the preview's failure.
+    expect(vi.mocked(clearStart)).not.toHaveBeenCalledWith(
+      "viewer:full-shown:1",
+    );
   });
 
   it("replaces the mounted canvas with the full-resolution one once it completes", async () => {
