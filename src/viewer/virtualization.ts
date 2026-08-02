@@ -67,6 +67,61 @@ export function rangeIncludes(range: IndexRange, index: number): boolean {
 }
 
 /**
+ * Which way the reader is scrolling, in DOM-index order (not necessarily page
+ * order — a right-bound spread's DOM order is already reversed by
+ * `toDomIndex`, so "forward" here always means "towards higher DOM index").
+ * `"none"` covers both a scroll position that has not moved and one nobody
+ * has measured yet (the first render).
+ */
+export type ScrollDirection = "forward" | "backward" | "none";
+
+/** Where {@link prefetchRange} suggests warming the render cache next. */
+export interface PrefetchTarget {
+  /** Items just past the visible range, in the direction of travel. */
+  ahead: IndexRange;
+  /** Items just before the visible range, opposite the direction of travel. */
+  behind: IndexRange;
+}
+
+/**
+ * Extends {@link visibleRange}'s window with a further lookahead for the
+ * background prefetch (issue #12) to warm — pages the synchronous overscan
+ * does not render but the reader is likely to reach soon.
+ *
+ * Unlike overscan, this is deliberately lopsided: `count` items ahead of
+ * travel, but only up to one behind it — a reader who reverses direction
+ * still gets the immediately preceding page warm from when it was ahead a
+ * moment ago, without spending the same budget on both directions at once.
+ * Direction `"none"` has no side to favour, so both get an equal (and
+ * necessarily smaller) share of `count` instead.
+ */
+export function prefetchRange(
+  layout: readonly LayoutItem[],
+  range: IndexRange,
+  direction: ScrollDirection,
+  count: number,
+): PrefetchTarget {
+  const length = layout.length;
+  const clampAhead = (n: number): IndexRange => ({
+    start: Math.min(length, range.end),
+    end: Math.max(range.end, Math.min(length, range.end + Math.max(0, n))),
+  });
+  const clampBehind = (n: number): IndexRange => ({
+    start: Math.min(range.start, Math.max(0, range.start - Math.max(0, n))),
+    end: Math.max(0, range.start),
+  });
+
+  if (direction === "forward") {
+    return { ahead: clampAhead(count), behind: clampBehind(1) };
+  }
+  if (direction === "backward") {
+    return { ahead: clampAhead(1), behind: clampBehind(count) };
+  }
+  const half = Math.floor(count / 2);
+  return { ahead: clampAhead(half), behind: clampBehind(half) };
+}
+
+/**
  * Scroll offset that centres an item in the viewport, clamped to the scrollable
  * area. Items wider than the viewport are aligned to their leading edge.
  */

@@ -204,11 +204,12 @@ function renderViewer(
       onOpenSettings={onOpenSettings}
     />
   );
-  const { rerender } = render(view(defaults));
+  const { rerender, unmount } = render(view(defaults));
   return {
     doc,
     onClose,
     onOpenSettings,
+    unmount,
     user: userEvent.setup(),
     /** Stands in for the reader changing the settings mid-document. */
     changeSettings: (next: { binding?: Binding; viewMode?: ViewMode }) =>
@@ -390,6 +391,78 @@ describe("PdfViewer", () => {
     await user.click(screen.getByRole("button", { name: "← ライブラリ" }));
 
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  describe("render-cache prefetch (issue #12)", () => {
+    /** Scrolls to `left`, letting the rAF-throttled handler and its idle
+     * prefetch callback (a `setTimeout` fallback in jsdom) both run. */
+    async function scrollTo(left: number) {
+      const element = scroller();
+      element.scrollLeft = left;
+      fireEvent.scroll(element);
+      await flushScroll();
+    }
+
+    it("warms pages beyond the visible range once idle, ahead of the scroll direction", async () => {
+      const { doc } = renderViewer(200);
+
+      // A first move establishes a scroll position to move forward from; a
+      // second move, further along, is what reads as "forward".
+      await scrollTo(3000);
+      const visibleBeforePrefetch = renderedPages();
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+
+      await waitFor(() => {
+        const pages = vi
+          .mocked(doc.renderPage)
+          .mock.calls.map((call) => call[0]);
+        // The synchronous overscan render already covers what's on screen;
+        // a page past all of that can only have come from the prefetch.
+        expect(
+          pages.some(
+            (page) =>
+              page > Math.max(...renderedPages(), ...visibleBeforePrefetch),
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it("does not touch the DOM — a prefetched page never appears as a rendered page label", async () => {
+      const { doc } = renderViewer(200);
+      await scrollTo(3000);
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+      await waitFor(() => {
+        expect(vi.mocked(doc.renderPage).mock.calls.length).toBeGreaterThan(0);
+      });
+
+      const rendered = new Set(renderedPages());
+      const prefetchedOnly = vi
+        .mocked(doc.renderPage)
+        .mock.calls.map((call) => call[0])
+        .filter((page) => !rendered.has(page));
+      // At least one call was for a page prefetch alone warmed the cache
+      // for — it rendered into an offscreen canvas, not one on screen.
+      expect(prefetchedOnly.length).toBeGreaterThan(0);
+    });
+
+    it("cancels a pending prefetch when the document is replaced", async () => {
+      const { doc, unmount } = renderViewer(200);
+      await scrollTo(3000);
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+      unmount();
+      const countAtUnmount = vi.mocked(doc.renderPage).mock.calls.length;
+
+      // Give any timer that survived the unmount a chance to fire; none
+      // should, and the call count must not grow after teardown.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(vi.mocked(doc.renderPage).mock.calls.length).toBe(countAtUnmount);
+    });
   });
 
   describe("wheel scrolling", () => {
