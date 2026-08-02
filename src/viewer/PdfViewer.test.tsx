@@ -156,6 +156,26 @@ function pointerGesture(
   );
 }
 
+/**
+ * A MouseEvent carrying a `pointerId`, so two concurrent "fingers" can be
+ * told apart for a pinch gesture. jsdom has no PointerEvent (see
+ * `pointerGesture` above); the id is bolted on afterwards since
+ * `MouseEventInit` has no such field.
+ */
+function touch(
+  type: string,
+  pointerId: number,
+  point: { x: number; y: number },
+): MouseEvent {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    clientX: point.x,
+    clientY: point.y,
+  });
+  Object.defineProperty(event, "pointerId", { value: pointerId });
+  return event;
+}
+
 /** Lets the rAF-throttled scroll handler run. */
 async function flushScroll() {
   await act(async () => {
@@ -330,6 +350,27 @@ describe("PdfViewer", () => {
     await user.keyboard("{Control>}={/Control}{Control>}={/Control}");
     await user.keyboard("{Control>}0{/Control}");
     expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+  });
+
+  it("pinches the zoom in and out with two fingers", async () => {
+    const { user } = renderViewer();
+    await user.click(screen.getByRole("button", { name: "拡大" }));
+    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+
+    const track = scroller();
+    // Two fingers 100px apart, spreading to 200px apart: the gesture doubles
+    // whatever zoom it started at.
+    fireEvent(track, touch("pointerdown", 1, { x: 100, y: 100 }));
+    fireEvent(track, touch("pointerdown", 2, { x: 200, y: 100 }));
+    fireEvent(window, touch("pointermove", 2, { x: 300, y: 100 }));
+    expect(screen.getByRole("button", { name: "250%" })).toBeInTheDocument();
+
+    // Pinching back in reaches the same zoom the gesture started from.
+    fireEvent(window, touch("pointermove", 2, { x: 200, y: 100 }));
+    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+
+    fireEvent(window, touch("pointerup", 1, { x: 100, y: 100 }));
+    fireEvent(window, touch("pointerup", 2, { x: 200, y: 100 }));
   });
 
   it("re-renders a page after a zoom change instead of reusing the cache", async () => {
@@ -1000,6 +1041,31 @@ describe("PdfViewer", () => {
       expect(
         screen.getByRole("toolbar", { name: "ハイライト操作" }),
       ).toBeInTheDocument();
+    });
+
+    it("does not read the fingers lifting off a pinch as a click on a highlight", async () => {
+      await openPanel({
+        ...emptyAnnotations(),
+        highlights: [fakeHighlight({ page: 1 })],
+      });
+      const page = document.querySelector<HTMLElement>('.page[data-page="1"]');
+      if (!page) throw new Error("page 1 is not rendered");
+      page.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, width: 100, height: 140 }) as DOMRect;
+
+      const track = scroller();
+      fireEvent(page, touch("pointerdown", 1, { x: 20, y: 30 }));
+      fireEvent(track, touch("pointerdown", 2, { x: 40, y: 30 }));
+      fireEvent(window, touch("pointermove", 2, { x: 60, y: 30 }));
+      // Both fingers land back within CLICK_SLOP_PX of where finger 1
+      // pressed — exactly what an ordinary click on the highlight looks
+      // like, if the pinch that happened in between is ignored.
+      fireEvent(page, touch("pointerup", 1, { x: 21, y: 30 }));
+      fireEvent(window, touch("pointerup", 2, { x: 22, y: 30 }));
+
+      expect(
+        screen.queryByRole("toolbar", { name: "ハイライト操作" }),
+      ).toBeNull();
     });
 
     it("closes the panel on a second press", async () => {

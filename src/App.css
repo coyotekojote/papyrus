@@ -1265,3 +1265,55 @@ body {
   border-color: #ff8080;
   color: #ff8080;
 }
+
+/* ---------- compact screens (issue #11) ---------- */
+
+/* Matches COMPACT_BREAKPOINT_PX in src/viewer/responsive.ts — kept as a
+   literal because CSS cannot read a TS constant. Outside this block nothing
+   here applies and the desktop layout above is unchanged. */
+@media (max-width: 699px) {
+  .toolbar {
+    flex-wrap: wrap;
+    /* iPhone's notch/Dynamic Island sits over the top-left corner; the other
+       three edges get theirs from .viewer__body below, where the toolbar's
+       own height does not need to shrink to make room. */
+    padding-top: calc(0.5rem + env(safe-area-inset-top));
+    padding-left: calc(0.75rem + env(safe-area-inset-left));
+    padding-right: calc(0.75rem + env(safe-area-inset-right));
+  }
+
+  .toolbar__title {
+    /* The title is the one label with no fixed meaning to a button — first
+       to give way. Pushed onto its own line rather than left to shrink to
+       illegibility between the buttons that share the row with it. */
+    order: 10;
+    flex-basis: 100%;
+    text-align: center;
+  }
+
+  .viewer__body {
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* The table of contents, highlights and notes panels share the row with
+     the scroller on a desktop-sized window; there is no spare row on a
+     phone-sized one, so they cover the pages instead of squeezing them. */
+  .sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 5;
+    width: min(85vw, 15rem);
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar.sidebar--right {
+    inset: 0 0 0 auto;
+    box-shadow: -4px 0 16px rgba(0, 0, 0, 0.5);
+  }
+
+  .sidebar.sidebar--notes {
+    width: min(90vw, 22rem);
+  }
+}

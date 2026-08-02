@@ -38,6 +38,11 @@ import {
   type DragPoint,
 } from "./clips";
 import {
+  pinchZoomFromTouch,
+  pointerDistance,
+  type TouchPoint,
+} from "./touch-pinch";
+import {
   highlightAtPoint,
   makeHighlight,
   normalizeSelectionRects,
@@ -54,6 +59,7 @@ import {
   spreadContentWidth,
 } from "./layout";
 import { PageRenderCache } from "./page-cache";
+import { defaultViewModeForScreen, useIsCompactScreen } from "./responsive";
 import {
   buildSpreads,
   clampSpreadIndex,
@@ -181,9 +187,15 @@ export function PdfViewer({
   onClose,
   onOpenSettings,
 }: PdfViewerProps) {
+  // Compact screens (issue #11) never start on a two-page spread: read before
+  // the view-mode state below, which needs it for its own initial value.
+  const isCompact = useIsCompactScreen();
+
   // Where the document starts; the toolbar then overrides both for this
   // document only. Changing the setting takes them back over (see below).
-  const [viewMode, setViewMode] = useState<ViewMode>(defaultViewMode);
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    defaultViewModeForScreen(defaultViewMode, isCompact),
+  );
   const [binding, setBinding] = useState<Binding>(defaultBinding);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [currentPage, setCurrentPage] = useState(1);
@@ -215,7 +227,13 @@ export function PdfViewer({
   // like the setting did nothing. Only a change moves these: the toolbar's own
   // toggles stand until the reader touches the setting again.
   useEffect(() => setBinding(defaultBinding), [defaultBinding]);
-  useEffect(() => setViewMode(defaultViewMode), [defaultViewMode]);
+  // Also re-applies when the screen crosses the compact breakpoint (a window
+  // resize, an iPad rotating): a spread that no longer fits is dropped back
+  // to single, and single goes back to the setting once there is room again.
+  useEffect(
+    () => setViewMode(defaultViewModeForScreen(defaultViewMode, isCompact)),
+    [defaultViewMode, isCompact],
+  );
 
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
@@ -239,6 +257,31 @@ export function PdfViewer({
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   /** The live drag, for the window listeners that must not re-register on move. */
   const dragRef = useRef<ClipDrag | null>(null);
+  /**
+   * Pointers currently down on the scroller, for two-finger pinch-to-zoom.
+   * Tracked by id because a third finger touching down (a stray palm, most
+   * often) must not be mistaken for one of the original two.
+   */
+  const pinchPointersRef = useRef<Map<number, TouchPoint>>(new Map());
+  /**
+   * Set once two fingers are down; null the rest of the time. The pinch is
+   * pinned to the two pointers that started it: a third finger joining, or
+   * one of the pair being replaced mid-gesture, must not silently swap in a
+   * different pair — its distance to the survivor has nothing to do with
+   * `startDistance`, and comparing them would jolt the zoom.
+   */
+  const pinchStateRef = useRef<{
+    pointers: readonly [number, number];
+    startZoom: number;
+    startDistance: number;
+  } | null>(null);
+  /**
+   * Whether the gesture in progress included a pinch. Read by
+   * {@link handlePointerUp} so the fingers lifting off does not also get
+   * read as a click or a text-selection release — the pinch already used
+   * that gesture for something else.
+   */
+  const pinchOccurredRef = useRef(false);
   /** Aborts an in-flight region render when the reader leaves the document. */
   const clipAbortRef = useRef<AbortController | null>(null);
   /** The latest `createClip`, for the same reason as `dragRef`. */
@@ -277,6 +320,20 @@ export function PdfViewer({
   // Read inside the wheel listener so it never has to be re-registered.
   const bindingRef = useRef(binding);
   bindingRef.current = binding;
+  // Read inside the pinch listener, for the same reason.
+  const zoomRef = useRef(zoom);
+  /** A pinch starting while a clip drag is being made would fight it for the
+   * same two fingers; read inside the pointerdown listener to keep it from
+   * starting one. */
+  const clipModeRef = useRef(clipMode);
+  // Written after the commit rather than during the render: React can throw
+  // a render away and redo it, and a discarded render must not leave these
+  // pointing at state that never became the UI. (Same reasoning as the
+  // createClipRef/dragRef effect further down.)
+  useEffect(() => {
+    zoomRef.current = zoom;
+    clipModeRef.current = clipMode;
+  });
 
   /** Spreads in scroll order: reversed for a right-bound book. */
   const domSpreads = useMemo(
@@ -439,6 +496,31 @@ export function PdfViewer({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [binding, goToSpread, runZoomCommand]);
 
+  // WKWebView still fires its own `gesture*` events for a two-finger touch
+  // even with the viewport's `user-scalable=no` (index.html) — that setting
+  // only stops the *page* from being magnified, not the events themselves.
+  // Left unhandled, the native pinch would zoom the whole WebView on top of
+  // the zoom this viewer already applies to the pages. Registered on
+  // `document` rather than the scroller: WebKit dispatches these outside the
+  // normal bubble path, so an element-level listener would miss some of them.
+  useEffect(() => {
+    const preventNativeGesture = (event: Event) => event.preventDefault();
+    document.addEventListener("gesturestart", preventNativeGesture, {
+      passive: false,
+    });
+    document.addEventListener("gesturechange", preventNativeGesture, {
+      passive: false,
+    });
+    document.addEventListener("gestureend", preventNativeGesture, {
+      passive: false,
+    });
+    return () => {
+      document.removeEventListener("gesturestart", preventNativeGesture);
+      document.removeEventListener("gesturechange", preventNativeGesture);
+      document.removeEventListener("gestureend", preventNativeGesture);
+    };
+  }, []);
+
   // Pinch-to-zoom arrives as ctrl+wheel; a plain vertical wheel scrolls the
   // horizontal track, which is the only axis this viewer has.
   useEffect(() => {
@@ -461,12 +543,78 @@ export function PdfViewer({
         cancelPendingScroll();
       }
     };
+    // The scroller's `touch-action: pan-x` hands two-finger movement to the
+    // browser as a pan, and once the browser claims the gesture it kills the
+    // pointer stream with `pointercancel` — the pinch would die on its first
+    // move. `touch-action` is only sampled when a gesture starts, so it
+    // cannot be loosened mid-pinch; cancelling the two-finger `touchmove`
+    // itself is what keeps the gesture ours. One finger stays untouched:
+    // that is the swipe that turns pages.
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length >= 2) event.preventDefault();
+    };
+
+    /** The pinch's own two pointers, current positions. */
+    const pinchPoints = (state: {
+      pointers: readonly [number, number];
+    }): [TouchPoint, TouchPoint] | null => {
+      const first = pinchPointersRef.current.get(state.pointers[0]);
+      const second = pinchPointersRef.current.get(state.pointers[1]);
+      return first && second ? [first, second] : null;
+    };
+
     // Any direct grab of the scroller also abandons an in-flight smooth scroll
     // and dismisses a floating popup, whose anchor is about to go stale.
     const onPointerDown = (event: PointerEvent) => {
       pointerDownRef.current = { x: event.clientX, y: event.clientY };
       cancelPendingScroll();
       setPopup(null);
+
+      // A clip drag already owns a single finger; letting a second one start
+      // a pinch on top of it would fight the drag for the same gesture.
+      if (clipModeRef.current) return;
+      pinchPointersRef.current.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+      // Exactly two, and none earlier in this gesture: a pinch begins only
+      // when the second finger joins the first. Once a pinch has run and
+      // ended (one of its fingers lifted), whatever fingers remain down —
+      // a stray palm among them, often enough — must not seed a new one;
+      // lifting everything is what arms the next pinch.
+      const ids = Array.from(pinchPointersRef.current.keys());
+      if (
+        ids.length === 2 &&
+        !pinchOccurredRef.current &&
+        pinchStateRef.current === null
+      ) {
+        const pointers = [ids[0], ids[1]] as const;
+        const state = { pointers };
+        const points = pinchPoints(state);
+        if (!points) return;
+        pinchStateRef.current = {
+          pointers,
+          startZoom: zoomRef.current,
+          startDistance: pointerDistance(points[0], points[1]),
+        };
+        pinchOccurredRef.current = true;
+      }
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (!pinchPointersRef.current.has(event.pointerId)) return;
+      pinchPointersRef.current.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+      const state = pinchStateRef.current;
+      if (!state) return;
+      const points = pinchPoints(state);
+      if (!points) return;
+      const distance = pointerDistance(points[0], points[1]);
+      setZoom(
+        pinchZoomFromTouch(state.startZoom, state.startDistance, distance),
+      );
     };
 
     /**
@@ -475,17 +623,33 @@ export function PdfViewer({
      * behind, its start would be measured against the next release and turn a
      * genuine click into a "drag". These fire after React's handler has run.
      */
-    const forgetPointerDown = () => {
+    const forgetPointerDown = (event: PointerEvent) => {
       pointerDownRef.current = null;
+      pinchPointersRef.current.delete(event.pointerId);
+      // Either of the pinch's own fingers lifting ends the pinch. Fingers
+      // that were never part of it (a stray palm) come and go freely — but
+      // the gesture is not over until every finger is up: `pinchOccurredRef`
+      // stays set until then, keeping the release from reading as a click
+      // and (see `onPointerDown`) blocking a new pinch from starting.
+      if (pinchStateRef.current?.pointers.includes(event.pointerId)) {
+        pinchStateRef.current = null;
+      }
+      if (pinchPointersRef.current.size === 0) {
+        pinchOccurredRef.current = false;
+      }
     };
 
     scroller.addEventListener("wheel", onWheel, { passive: false });
+    scroller.addEventListener("touchmove", onTouchMove, { passive: false });
     scroller.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", forgetPointerDown);
     window.addEventListener("pointercancel", forgetPointerDown);
     return () => {
       scroller.removeEventListener("wheel", onWheel);
+      scroller.removeEventListener("touchmove", onTouchMove);
       scroller.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", forgetPointerDown);
       window.removeEventListener("pointercancel", forgetPointerDown);
     };
@@ -500,6 +664,12 @@ export function PdfViewer({
     (event: ReactPointerEvent) => {
       const start = pointerDownRef.current;
       pointerDownRef.current = null;
+      // A pinch already used this gesture; the fingers lifting off is not a
+      // click or a text-selection release on top of it. Left to the checks
+      // below, whichever finger happened to land near where it started would
+      // otherwise pop up a highlight's actions or offer to highlight a
+      // selection the pinch never intended to make.
+      if (pinchOccurredRef.current) return;
       const bodyRect = bodyRef.current?.getBoundingClientRect();
       if (!bodyRect) return;
       const position: PopupPosition = {

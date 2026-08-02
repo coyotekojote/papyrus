@@ -5,6 +5,14 @@ export interface RecentFile {
   name: string;
   /** Epoch milliseconds of the most recent open. */
   openedAt: number;
+  /**
+   * Security-scoped bookmark for `path` (iOS only, issue #11). iOS revokes a
+   * document picker's access to a file once the app relaunches; the bookmark
+   * is what lets the file be reopened from the recent list afterwards. Absent
+   * on every other platform, and on entries saved before this field existed —
+   * both cases just fall back to opening `path` directly.
+   */
+  bookmark?: string;
 }
 
 export const MAX_RECENT_FILES = 10;
@@ -46,6 +54,9 @@ function isRecentFile(value: unknown): value is RecentFile {
     typeof candidate.name === "string" &&
     typeof candidate.openedAt === "number" &&
     Number.isFinite(candidate.openedAt)
+    // `bookmark` is checked separately, in the caller: a malformed bookmark
+    // (missing, null, a stray number, …) should not sink the whole entry — an
+    // entry saved before this field existed is still a valid recent file.
   );
 }
 
@@ -72,6 +83,9 @@ export function parseRecentFiles(raw: string | null): RecentFile[] {
       path: entry.path,
       name: entry.name,
       openedAt: entry.openedAt,
+      ...(typeof entry.bookmark === "string"
+        ? { bookmark: entry.bookmark }
+        : {}),
     });
     if (files.length >= MAX_RECENT_FILES) break;
   }

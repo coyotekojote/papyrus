@@ -2266,6 +2266,8 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "keyring",
+ "objc2",
+ "objc2-foundation",
  "reqwest",
  "security-framework 3.7.0",
  "security-framework-sys",
