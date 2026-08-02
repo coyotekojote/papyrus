@@ -268,19 +268,40 @@ fn user_prompt(request: &TranslationRequest) -> String {
 
 struct Claude;
 
+/// Model families whose thinking cannot be turned off; asking them to returns
+/// a 400. Matched by prefix because each family is a series of model ids.
+const ALWAYS_THINKING_MODELS: [&str; 2] = ["claude-fable", "claude-mythos"];
+
+/// `Some` when the model takes a thinking setting, `None` when it must be left
+/// out entirely.
+///
+/// Translating a paragraph needs no deliberation, and on the models that think
+/// by default it is charged against `max_tokens` as well as against the time
+/// the reader waits. The models that cannot be quiet simply get no setting —
+/// any model id can be typed into the settings screen, so this is decided from
+/// the id rather than assumed.
+fn claude_thinking(model: &str) -> Option<Value> {
+    if ALWAYS_THINKING_MODELS
+        .iter()
+        .any(|family| model.starts_with(family))
+    {
+        return None;
+    }
+    Some(json!({ "type": "disabled" }))
+}
+
 impl TranslationProvider for Claude {
     fn build_request(&self, key: &str, request: &TranslationRequest) -> Result<HttpRequest> {
         let model = request.model.as_deref().unwrap_or(CLAUDE_DEFAULT_MODEL);
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "max_tokens": MAX_OUTPUT_TOKENS,
-            // Translating a paragraph needs no deliberation, and thinking
-            // would be charged against max_tokens as well as the latency the
-            // reader waits through.
-            "thinking": { "type": "disabled" },
             "system": system_prompt(&request.target_language),
             "messages": [{ "role": "user", "content": user_prompt(request) }],
         });
+        if let Some(thinking) = claude_thinking(model) {
+            body["thinking"] = thinking;
+        }
         Ok(HttpRequest {
             url: "https://api.anthropic.com/v1/messages".to_string(),
             headers: vec![
@@ -498,18 +519,30 @@ pub fn interpret(provider: &dyn TranslationProvider, response: &HttpResponse) ->
     }
 }
 
-fn client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .unwrap_or_default()
-    })
+/// The shared client, or why it could not be built.
+///
+/// Building one reads the platform's TLS roots and proxy configuration, so it
+/// can fail on a broken machine. Falling back to a default client is not an
+/// option: that constructor panics on the same failure, and a client built
+/// some other way would quietly drop the timeout and leave the reader looking
+/// at "翻訳しています…" forever.
+fn client() -> Result<&'static reqwest::Client> {
+    static CLIENT: OnceLock<std::result::Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .map_err(|err| err.to_string())
+        })
+        .as_ref()
+        .map_err(|message| TranslationError::Internal {
+            message: message.clone(),
+        })
 }
 
 async fn send(request: HttpRequest) -> Result<HttpResponse> {
-    let mut builder = client().post(&request.url).body(request.body);
+    let mut builder = client()?.post(&request.url).body(request.body);
     for (name, value) in &request.headers {
         builder = builder.header(name, value);
     }
@@ -730,6 +763,38 @@ mod tests {
         // Rejected outright by the current models; sending one fails the call.
         assert!(body.get("temperature").is_none());
         assert!(body.get("top_p").is_none());
+    }
+
+    #[test]
+    fn claude_sends_no_thinking_setting_to_a_model_that_cannot_stop_thinking() {
+        // These reject "disabled" with a 400, and the reader can type any
+        // model id into the settings screen.
+        for model in ["claude-fable-5", "claude-mythos-5", "claude-mythos-preview"] {
+            let http = Claude
+                .build_request(
+                    "k",
+                    &TranslationRequest {
+                        model: Some(model.to_string()),
+                        ..request()
+                    },
+                )
+                .unwrap();
+            assert!(body_of(&http).get("thinking").is_none(), "model: {model}");
+        }
+
+        // Everything else takes it, including the extended-thinking models.
+        for model in ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"] {
+            let http = Claude
+                .build_request(
+                    "k",
+                    &TranslationRequest {
+                        model: Some(model.to_string()),
+                        ..request()
+                    },
+                )
+                .unwrap();
+            assert_eq!(body_of(&http)["thinking"]["type"], "disabled", "{model}");
+        }
     }
 
     #[test]

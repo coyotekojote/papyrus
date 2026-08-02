@@ -220,6 +220,9 @@ export function PdfViewer({
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
   const translation = useTranslation();
+  // Pulled out so the callback below depends on the starter rather than on the
+  // object the hook rebuilds on every state change.
+  const { start: beginTranslation } = translation;
   const highlightsByPage = useMemo(() => {
     const byPage = new Map<number, Highlight[]>();
     for (const highlight of annotations.annotations.highlights) {
@@ -644,7 +647,7 @@ export function PdfViewer({
       position: PopupPosition,
     ) => {
       setTranslationAt(position);
-      translation.start({
+      beginTranslation({
         input: {
           text,
           contextBefore: context.before,
@@ -655,7 +658,7 @@ export function PdfViewer({
       setPopup(null);
       window.getSelection()?.removeAllRanges();
     },
-    [translation],
+    [beginTranslation],
   );
 
   /**

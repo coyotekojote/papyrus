@@ -23,10 +23,14 @@ keyring = { version = "3", features = [
 # Translation providers are called from Rust, so the API key never reaches the
 # WebView (see translation.rs). rustls rather than the platform TLS stack: one
 # behaviour to reason about on every target, and no OpenSSL to build.
-reqwest = { version = "0.12", default-features = false, features = [
+#
+# Kept on the major version tauri itself depends on: a second reqwest would be
+# compiled into the binary alongside the one already there.
+reqwest = { version = "0.13", default-features = false, features = [
+  "charset",
   "http2",
   "json",
-  "rustls-tls",
+  "rustls",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
