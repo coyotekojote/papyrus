@@ -75,9 +75,11 @@ import {
 import {
   computeLayout,
   nearestItemIndex,
+  prefetchRange,
   rangeIncludes,
   scrollOffsetForItem,
   visibleRange,
+  type ScrollDirection,
 } from "./virtualization";
 import {
   DEFAULT_ZOOM,
@@ -89,6 +91,34 @@ import {
 
 /** Spreads rendered on each side of the visible one. */
 const OVERSCAN = 1;
+
+/**
+ * How many further spreads to warm the render cache for, beyond `OVERSCAN`,
+ * in the direction the reader is scrolling (issue #12). Kept out of the
+ * synchronous render path — see the prefetch effect below — so it never
+ * competes with what is actually on screen for the renderer's attention.
+ */
+const PREFETCH_COUNT = 3;
+
+/** Schedules `callback` for a moment the browser is otherwise idle, falling
+ * back to a macrotask where `requestIdleCallback` does not exist (jsdom,
+ * Safari as of this writing). */
+function scheduleIdle(callback: () => void): number {
+  const ric = (
+    window as unknown as { requestIdleCallback?: (cb: () => void) => number }
+  ).requestIdleCallback;
+  return typeof ric === "function"
+    ? ric(callback)
+    : window.setTimeout(callback, 1);
+}
+
+function cancelIdle(handle: number): void {
+  const cic = (
+    window as unknown as { cancelIdleCallback?: (handle: number) => void }
+  ).cancelIdleCallback;
+  if (typeof cic === "function") cic(handle);
+  else window.clearTimeout(handle);
+}
 
 /**
  * How far the pointer may travel between press and release and still count as
@@ -304,6 +334,10 @@ export function PdfViewer({
   /** DOM index we scrolled to on purpose; scroll events ignore it until reached. */
   const pendingDomIndexRef = useRef<number | null>(null);
   const scrollFrameRef = useRef<number | null>(null);
+  /** Which way the reader is scrolling, updated alongside `scrollLeft` in
+   * {@link handleScroll}; read (not depended on) by the prefetch effect. */
+  const scrollDirectionRef = useRef<ScrollDirection>("none");
+  const lastScrollLeftRef = useRef(0);
 
   const spreads = useMemo(
     () => buildSpreads(doc.pageCount, viewMode),
@@ -359,6 +393,119 @@ export function PdfViewer({
     () => visibleRange(layout, scrollLeft, viewportWidth, OVERSCAN),
     [layout, scrollLeft, viewportWidth],
   );
+  // Destructured for the prefetch effect below: `range` is a fresh object on
+  // every recompute even when its bounds have not moved, and depending on it
+  // directly would abort (and thus never finish) an in-flight prefetch on
+  // every single scroll event's re-render.
+  const { start: rangeStart, end: rangeEnd } = range;
+
+  /**
+   * Warms the render cache for pages just outside the synchronously rendered
+   * `range`, in the direction the reader is scrolling (issue #12). Runs one
+   * page per idle slot, chained until the target set is warm or a new range
+   * (a further scroll, a zoom, a document switch) supersedes it — never
+   * competing with the visible pages for the renderer's attention, and never
+   * touching the DOM: a prefetched page only ever reaches the screen through
+   * `PageCanvas`'s own cache hit.
+   */
+  useEffect(() => {
+    if (total === 0) return;
+    const currentRange = { start: rangeStart, end: rangeEnd };
+
+    const target = prefetchRange(
+      layout,
+      currentRange,
+      scrollDirectionRef.current,
+      PREFETCH_COUNT,
+    );
+    const domIndices: number[] = [];
+    for (let i = target.behind.start; i < target.behind.end; i += 1) {
+      domIndices.push(i);
+    }
+    for (let i = target.ahead.start; i < target.ahead.end; i += 1) {
+      domIndices.push(i);
+    }
+
+    const pageNumbers = new Set<number>();
+    for (const domIndex of domIndices) {
+      // Already in the synchronous render range: PageCanvas already covers it.
+      if (rangeIncludes(currentRange, domIndex)) continue;
+      for (const pageNumber of domSpreads[domIndex] ?? []) {
+        pageNumbers.add(pageNumber);
+      }
+    }
+    const pending = Array.from(pageNumbers).filter(
+      (pageNumber) => !cache.has(pageNumber, zoom),
+    );
+    if (pending.length === 0) return;
+
+    // Local to this effect run, not refs: nothing outside this closure ever
+    // reads them, and each new run of the effect (a further scroll, a zoom,
+    // a document switch) gets its own pair via the cleanup below rather than
+    // sharing state across runs.
+    const controller = new AbortController();
+    let idleHandle: number | null = null;
+
+    const warmNext = () => {
+      idleHandle = null;
+      if (controller.signal.aborted) return;
+      const pageNumber = pending.shift();
+      if (pageNumber === undefined) return;
+      if (cache.has(pageNumber, zoom)) {
+        // Warmed by something else (the visible range's own render, most
+        // likely) since this was queued: move on without re-rendering it.
+        idleHandle = scheduleIdle(warmNext);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      // A cache hit is spliced straight into the DOM as-is (see PageCanvas),
+      // so a prefetched canvas without this class would paint inline instead
+      // of `display: block` and throw off the page's baseline spacing the
+      // moment the reader scrolls to it.
+      canvas.className = "page__canvas";
+      doc
+        .renderPage(pageNumber, {
+          scale: zoom,
+          canvas,
+          signal: controller.signal,
+        })
+        .then(() => {
+          if (controller.signal.aborted) return;
+          // A prefetch warms an offscreen canvas nobody is necessarily
+          // looking at — unlike `PageCanvas`'s own render, it must not lean
+          // on `cache.set`'s "keep the one entry that alone exceeds the
+          // budget" rule, which assumes that entry is the page on screen
+          // right now. At extreme zoom (zoom 6 × DPR 2, an A4 page is
+          // ~70,000,000px — already over the 64,000,000px default budget on
+          // its own) a prefetched page could otherwise evict every page
+          // actually visible and then sit there itself, uselessly, as the
+          // cache's only entry. Skipping the cache here just means this
+          // page renders again if the reader actually scrolls to it — no
+          // worse than never having prefetched it.
+          if (cache.fitsBudget(canvas.width * canvas.height)) {
+            cache.set(pageNumber, zoom, canvas);
+          } else {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
+        })
+        .catch(() => {
+          // A prefetch that fails just stays cold; the reader's own render,
+          // if they scroll here, is what surfaces a real error.
+        })
+        .finally(() => {
+          if (!controller.signal.aborted && pending.length > 0) {
+            idleHandle = scheduleIdle(warmNext);
+          }
+        });
+    };
+    idleHandle = scheduleIdle(warmNext);
+
+    return () => {
+      controller.abort();
+      if (idleHandle !== null) cancelIdle(idleHandle);
+    };
+  }, [rangeStart, rangeEnd, layout, domSpreads, doc, cache, zoom, total]);
 
   // Measure the scroll viewport; every layout number below depends on it.
   useEffect(() => {
@@ -421,6 +568,14 @@ export function PdfViewer({
       if (!scroller) return;
 
       const left = scroller.scrollLeft;
+      const previousLeft = lastScrollLeftRef.current;
+      lastScrollLeftRef.current = left;
+      scrollDirectionRef.current =
+        left > previousLeft
+          ? "forward"
+          : left < previousLeft
+            ? "backward"
+            : "none";
       setScrollLeft(left);
       // The popup is anchored to viewport coordinates; scrolling moves the
       // page out from under it.

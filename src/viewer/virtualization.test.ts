@@ -3,6 +3,7 @@ import {
   computeLayout,
   layoutExtent,
   nearestItemIndex,
+  prefetchRange,
   rangeIncludes,
   scrollOffsetForItem,
   visibleRange,
@@ -82,6 +83,82 @@ describe("visibleRange", () => {
 
     expect(range).toEqual({ start: 118, end: 123 });
     expect(range.end - range.start).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("prefetchRange", () => {
+  // 10 uniform items, indices 0..9.
+  const layout = computeLayout(Array.from({ length: 10 }, () => 100));
+
+  it("spreads count items ahead of the visible range when moving forward", () => {
+    const range = { start: 3, end: 5 };
+    expect(prefetchRange(layout, range, "forward", 3)).toEqual({
+      ahead: { start: 5, end: 8 },
+      behind: { start: 2, end: 3 },
+    });
+  });
+
+  it("spreads count items behind the visible range when moving backward", () => {
+    const range = { start: 3, end: 5 };
+    expect(prefetchRange(layout, range, "backward", 3)).toEqual({
+      ahead: { start: 5, end: 6 },
+      behind: { start: 0, end: 3 },
+    });
+  });
+
+  it("splits count evenly on both sides when the direction is unknown", () => {
+    const range = { start: 3, end: 5 };
+    expect(prefetchRange(layout, range, "none", 4)).toEqual({
+      ahead: { start: 5, end: 7 },
+      behind: { start: 1, end: 3 },
+    });
+  });
+
+  it("discards the odd remainder rather than favour a side when unknown and count is odd", () => {
+    const range = { start: 3, end: 5 };
+    expect(prefetchRange(layout, range, "none", 3)).toEqual({
+      ahead: { start: 5, end: 6 },
+      behind: { start: 2, end: 3 },
+    });
+  });
+
+  it("truncates the ahead side at the end of the layout", () => {
+    const range = { start: 7, end: 9 };
+    expect(prefetchRange(layout, range, "forward", 5)).toEqual({
+      ahead: { start: 9, end: 10 },
+      behind: { start: 6, end: 7 },
+    });
+  });
+
+  it("truncates the behind side at the start of the layout", () => {
+    const range = { start: 0, end: 2 };
+    expect(prefetchRange(layout, range, "backward", 5)).toEqual({
+      ahead: { start: 2, end: 3 },
+      behind: { start: 0, end: 0 },
+    });
+  });
+
+  it("empties the ahead side when count is 0, but keeps behind at its fixed 0-1 floor", () => {
+    const range = { start: 3, end: 5 };
+    expect(prefetchRange(layout, range, "forward", 0)).toEqual({
+      ahead: { start: 5, end: 5 },
+      behind: { start: 2, end: 3 },
+    });
+  });
+
+  it("returns an empty layout's prefetch as all-empty ranges", () => {
+    expect(prefetchRange([], { start: 0, end: 0 }, "forward", 5)).toEqual({
+      ahead: { start: 0, end: 0 },
+      behind: { start: 0, end: 0 },
+    });
+  });
+
+  it("never returns a negative count as growth", () => {
+    const range = { start: 3, end: 5 };
+    expect(prefetchRange(layout, range, "forward", -2)).toEqual({
+      ahead: { start: 5, end: 5 },
+      behind: { start: 2, end: 3 },
+    });
   });
 });
 

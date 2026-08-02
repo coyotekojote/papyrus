@@ -128,6 +128,21 @@ function scroller(): HTMLElement {
   return element as HTMLElement;
 }
 
+/** Pixel width of a laid-out `.spread`. Every spread is the same width for a
+ * fixture whose pages are all the same size (as `fakeDoc`'s are), so this is
+ * enough to compute the `scrollLeft` a given single-page spread sits at. */
+function spreadWidthPx(): number {
+  const element = document.querySelector<HTMLElement>(".spread");
+  if (!element) throw new Error("no spread is currently rendered");
+  const width = Number.parseFloat(element.style.width);
+  if (!Number.isFinite(width) || width <= 0) {
+    throw new Error(
+      `could not read a usable spread width (got "${element.style.width}")`,
+    );
+  }
+  return width;
+}
+
 /**
  * A press and release at the given viewport coordinates. Built as MouseEvents
  * because jsdom has no PointerEvent, and fireEvent.pointerUp would then drop
@@ -204,11 +219,12 @@ function renderViewer(
       onOpenSettings={onOpenSettings}
     />
   );
-  const { rerender } = render(view(defaults));
+  const { rerender, unmount } = render(view(defaults));
   return {
     doc,
     onClose,
     onOpenSettings,
+    unmount,
     user: userEvent.setup(),
     /** Stands in for the reader changing the settings mid-document. */
     changeSettings: (next: { binding?: Binding; viewMode?: ViewMode }) =>
@@ -390,6 +406,186 @@ describe("PdfViewer", () => {
     await user.click(screen.getByRole("button", { name: "← ライブラリ" }));
 
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  describe("render-cache prefetch (issue #12)", () => {
+    /** Scrolls to `left`, letting the rAF-throttled handler and its idle
+     * prefetch callback (a `setTimeout` fallback in jsdom) both run. */
+    async function scrollTo(left: number) {
+      const element = scroller();
+      element.scrollLeft = left;
+      fireEvent.scroll(element);
+      await flushScroll();
+    }
+
+    it("warms pages beyond the visible range once idle, ahead of the scroll direction", async () => {
+      const { doc } = renderViewer(200);
+
+      // A first move establishes a scroll position to move forward from; a
+      // second move, further along, is what reads as "forward".
+      await scrollTo(3000);
+      const visibleBeforePrefetch = renderedPages();
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+
+      await waitFor(() => {
+        const pages = vi
+          .mocked(doc.renderPage)
+          .mock.calls.map((call) => call[0]);
+        // The synchronous overscan render already covers what's on screen;
+        // a page past all of that can only have come from the prefetch.
+        expect(
+          pages.some(
+            (page) =>
+              page > Math.max(...renderedPages(), ...visibleBeforePrefetch),
+          ),
+        ).toBe(true);
+      });
+    });
+
+    it("does not touch the DOM — a prefetched page never appears as a rendered page label", async () => {
+      const { doc } = renderViewer(200);
+      await scrollTo(3000);
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+      // Both the "is there a call at all" and the "is one of them a
+      // prefetch" checks live inside `waitFor`: the first `renderPage` call
+      // to land after the scroll is usually the synchronous visible-range
+      // render, and only the idle-scheduled prefetch call afterwards is what
+      // this asserts on — checking once, as soon as any call exists, would
+      // be flaky. `rendered` is read fresh on every poll too, since the
+      // visible set the synchronous render targets keeps settling for a few
+      // ticks after the scroll.
+      await waitFor(() => {
+        const rendered = new Set(renderedPages());
+        const prefetchedOnly = vi
+          .mocked(doc.renderPage)
+          .mock.calls.map((call) => call[0])
+          .filter((page) => !rendered.has(page));
+        // At least one call was for a page prefetch alone warmed the cache
+        // for — it rendered into an offscreen canvas, not one on screen.
+        expect(prefetchedOnly.length).toBeGreaterThan(0);
+      });
+    });
+
+    it("gives a prefetched canvas the same page__canvas class as an on-screen one", async () => {
+      // A cache hit is re-attached to the DOM as-is (see PageCanvas), so a
+      // prefetched canvas missing this class would paint inline instead of
+      // `display: block` and throw off the page's layout once scrolled to.
+      const { doc } = renderViewer(200);
+      await scrollTo(3000);
+      const rendered = new Set(renderedPages());
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+      await waitFor(() => {
+        const prefetchCall = vi
+          .mocked(doc.renderPage)
+          .mock.calls.find((call) => !rendered.has(call[0]));
+        expect(prefetchCall).toBeDefined();
+        expect(prefetchCall?.[1].canvas.className).toBe("page__canvas");
+      });
+    });
+
+    it("discards a prefetched canvas instead of caching it when it alone exceeds the pixel budget", async () => {
+      const { doc } = renderViewer(200);
+      // Simulate an oversized render (the extreme-zoom scenario this guards
+      // against): every canvas handed to `renderPage` comes back far bigger
+      // than the cache's entire default pixel budget on its own.
+      vi.mocked(doc.renderPage).mockImplementation(
+        async (_pageNumber, options) => {
+          options.canvas.width = 20_000;
+          options.canvas.height = 20_000; // 400,000,000px
+        },
+      );
+
+      await scrollTo(3000);
+      vi.mocked(doc.renderPage).mockClear();
+      await scrollTo(9000);
+
+      const prefetchedPage = await waitFor(() => {
+        const rendered = new Set(renderedPages());
+        const prefetchCall = vi
+          .mocked(doc.renderPage)
+          .mock.calls.find((call) => !rendered.has(call[0]));
+        expect(prefetchCall).toBeDefined();
+        // Discarded, not cached: the prefetch path must not lean on
+        // PageRenderCache.set's "keep the one entry that alone exceeds the
+        // budget" rule — that rule assumes the entry is the page on screen,
+        // which an offscreen prefetch is not. Zeroing it here is the same
+        // release the cache's own eviction uses for a canvas nobody needs.
+        expect(prefetchCall?.[1].canvas.width).toBe(0);
+        expect(prefetchCall?.[1].canvas.height).toBe(0);
+        return prefetchCall![0];
+      });
+
+      // The zeroing alone is not proof the page was never cached — a broken
+      // implementation that called `cache.set` *before* zeroing would leave
+      // a zero-size canvas sitting in the cache: a "hit" on the next scroll
+      // that paints nothing. Scrolling the discarded page into view and
+      // seeing `renderPage` run for it again is the behavioural proof that
+      // it was actually skipped, not cached blank.
+      vi.mocked(doc.renderPage).mockClear();
+      await scrollTo((prefetchedPage - 1) * spreadWidthPx());
+
+      await waitFor(() => {
+        expect(
+          vi
+            .mocked(doc.renderPage)
+            .mock.calls.some((call) => call[0] === prefetchedPage),
+        ).toBe(true);
+      });
+    });
+
+    it("cancels a pending prefetch when the component unmounts", async () => {
+      const { doc, unmount } = renderViewer(200);
+      await scrollTo(3000);
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+      unmount();
+      const countAtUnmount = vi.mocked(doc.renderPage).mock.calls.length;
+
+      // Give any timer that survived the unmount a chance to fire; none
+      // should, and the call count must not grow after teardown.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(vi.mocked(doc.renderPage).mock.calls.length).toBe(countAtUnmount);
+    });
+
+    it("cancels a pending prefetch when the document prop is replaced (no unmount)", async () => {
+      // Same scenario as above, but the component itself stays mounted — only
+      // its `doc` prop changes, the way App.tsx swaps documents on `openPath`.
+      // The prefetch effect's own cleanup (not an unmount) is what must catch
+      // this: without it, the old document's renderer would keep receiving
+      // idle-scheduled prefetch calls for a document nobody can see any more.
+      const docA = fakeDoc(200);
+      const docB = fakeDoc(200);
+      const onClose = vi.fn();
+      const view = (doc: PdfDocumentHandle) => (
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(200)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={onClose}
+        />
+      );
+      const { rerender } = render(view(docA));
+
+      await scrollTo(3000);
+      vi.mocked(docA.renderPage).mockClear();
+      await scrollTo(9000);
+
+      rerender(view(docB));
+      const countAtSwap = vi.mocked(docA.renderPage).mock.calls.length;
+
+      // Give any timer that survived the swap a chance to fire; none should
+      // land on the old document.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(vi.mocked(docA.renderPage).mock.calls.length).toBe(countAtSwap);
+    });
   });
 
   describe("wheel scrolling", () => {

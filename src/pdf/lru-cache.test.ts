@@ -92,4 +92,25 @@ describe("LruCache", () => {
     expect(cache.delete("a")).toBe(true);
     expect(cache.delete("a")).toBe(false);
   });
+
+  describe("peek", () => {
+    it("returns undefined for a missing key", () => {
+      const cache = new LruCache<string, number>(2);
+      expect(cache.peek("missing")).toBeUndefined();
+    });
+
+    it("returns the value without promoting it to most recently used", () => {
+      const cache = new LruCache<string, number>(2);
+      cache.set("a", 1);
+      cache.set("b", 2);
+
+      expect(cache.peek("a")).toBe(1);
+      // Unlike `get`, this must not have protected "a" from eviction — "b"
+      // is still the more recently touched of the two by every measure that
+      // matters (it was `set` after "a", and "a" was only ever `peek`ed).
+      cache.set("c", 3);
+      expect(cache.has("a")).toBe(false);
+      expect(cache.keys()).toEqual(["b", "c"]);
+    });
+  });
 });

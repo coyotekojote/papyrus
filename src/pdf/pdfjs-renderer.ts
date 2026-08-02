@@ -19,6 +19,8 @@ import workerUrl from "./pdf-worker?worker&url";
 
 import { backingStoreRatio } from "./canvas-scale";
 import { resolveOutline } from "./outline-resolve";
+import { clearStart, markEnd, markStart } from "../perf/marks";
+import { LruCache } from "./lru-cache";
 import { clampRegion } from "./region";
 import {
   PdfPageOutOfRangeError,
@@ -41,6 +43,34 @@ GlobalWorkerOptions.workerSrc = workerUrl;
  * large enough that the canvas would stop being paintable.
  */
 const CLIP_SCALE = 3;
+
+/**
+ * How many `PDFPageProxy` objects a document keeps alive at once. Unlike
+ * {@link PageRenderCache}, this is not about rendered pixels — a page proxy
+ * mainly holds parsed content-stream/operator-list state — but a document the
+ * reader scrolls end to end (a scan, a long thesis) would otherwise grow this
+ * without bound for as long as the document stays open.
+ */
+const PAGE_PROXY_CACHE_CAPACITY = 64;
+
+/**
+ * Releases a page proxy's resources once it is no longer cached. Evicting a
+ * promise that has not resolved yet is safe: the fetch already in flight is
+ * left to finish on its own (pdf.js has no way to cancel `getPage`), and
+ * `cleanup` simply runs once it does. If the proxy is mid-render when this
+ * fires, `cleanup` reports that by returning `false` rather than throwing —
+ * nothing else to do here but leave it be until it is next evicted.
+ */
+function cleanupPage(pending: Promise<PDFPageProxy>): void {
+  pending.then(
+    (page) => {
+      page.cleanup();
+    },
+    () => {
+      // The fetch itself failed — there is no proxy to clean up.
+    },
+  );
+}
 
 function devicePixelRatio(): number {
   return typeof window === "undefined" ? 1 : (window.devicePixelRatio ?? 1);
@@ -72,9 +102,15 @@ function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob> {
 class PdfJsDocument implements PdfDocumentHandle {
   readonly pageCount: number;
 
-  private readonly pages = new Map<number, Promise<PDFPageProxy>>();
+  private readonly pages = new LruCache<number, Promise<PDFPageProxy>>(
+    PAGE_PROXY_CACHE_CAPACITY,
+    (_, pending) => cleanupPage(pending),
+  );
   private outline: Promise<OutlineNode[]> | null = null;
   private destroyed = false;
+  /** Marks only the very first `renderPage` on this document — the one that
+   * decides how long the reader stares at a blank page after opening. */
+  private firstRenderMarked = false;
 
   constructor(
     private readonly doc: PDFDocumentProxy,
@@ -111,8 +147,34 @@ class PdfJsDocument implements PdfDocumentHandle {
     pageNumber: number,
     { scale, canvas, signal }: RenderPageOptions,
   ): Promise<void> {
-    const page = await this.page(pageNumber);
-    if (signal?.aborted || this.destroyed) return;
+    const isFirstRender = !this.firstRenderMarked;
+    this.firstRenderMarked = true;
+    if (isFirstRender) markStart("pdfjs:first-render-page");
+    // Shared by every early exit below: none of them ever reached pdf.js's
+    // own render call, so nothing was actually timed. Without this, the
+    // start mark above would sit unmeasured forever (`firstRenderMarked`
+    // already latched) and no later call would get a chance to time the page
+    // the reader actually first sees rendered.
+    const abandonFirstRenderMark = () => {
+      if (!isFirstRender) return;
+      clearStart("pdfjs:first-render-page");
+      this.firstRenderMarked = false;
+    };
+
+    let page: PDFPageProxy;
+    try {
+      page = await this.page(pageNumber);
+    } catch (cause) {
+      // An out-of-range page, most often — a document switch racing a stale
+      // page number is not unusual.
+      abandonFirstRenderMark();
+      throw cause;
+    }
+    if (signal?.aborted || this.destroyed) {
+      // A document switch racing the first page itself, this time.
+      abandonFirstRenderMark();
+      return;
+    }
 
     const cssViewport = page.getViewport({ scale });
     // May be < 1 for very large pages or extreme zoom: the backing store is
@@ -143,6 +205,7 @@ class PdfJsDocument implements PdfDocumentHandle {
       await task.promise;
     } finally {
       signal?.removeEventListener("abort", onAbort);
+      if (isFirstRender) markEnd("pdfjs:first-render-page");
     }
   }
 
@@ -252,10 +315,16 @@ export class PdfJsRenderer implements PdfRenderer {
   readonly id = "pdfjs";
 
   async open(data: Uint8Array): Promise<PdfDocumentHandle> {
-    // pdf.js transfers and neuters the buffer it is given, so hand it a copy:
-    // callers (and the recent-files retry path) keep using their own bytes.
+    markStart("pdfjs:open");
+    // pdf.js transfers and neuters the buffer it is given. Every caller in
+    // this app (App.tsx's openPath, PdfCover's renderCover) reads `data`
+    // fresh from disk right before this call and never touches it again, so
+    // there is nothing left for a defensive copy to protect — handing pdf.js
+    // the buffer directly avoids doubling peak memory on a large PDF. A
+    // future caller that needs to keep using its own bytes must copy before
+    // calling `open`, per the `PdfRenderer.open` contract.
     const loadingTask = getDocument({
-      data: data.slice(),
+      data,
       // Bundled by the `papyrus:pdfjs-runtime-assets` Vite plugin. Without
       // these, CJK documents fall back to substituted glyphs.
       cMapUrl: "/pdfjs/cmaps/",
@@ -263,7 +332,19 @@ export class PdfJsRenderer implements PdfRenderer {
       standardFontDataUrl: "/pdfjs/standard_fonts/",
       wasmUrl: "/pdfjs/wasm/",
     });
-    const doc = await loadingTask.promise;
-    return new PdfJsDocument(doc, loadingTask);
+    try {
+      const doc = await loadingTask.promise;
+      return new PdfJsDocument(doc, loadingTask);
+    } catch (cause) {
+      // A failed load still spins up worker-side state (`PDFWorker.create`
+      // runs per loading task); left undestroyed, that worker would leak for
+      // as long as the app stays open. `destroy()`'s own failure is not worth
+      // masking the real error behind — it is best-effort cleanup on top of
+      // a load that already failed.
+      await loadingTask.destroy().catch(() => {});
+      throw cause;
+    } finally {
+      markEnd("pdfjs:open");
+    }
   }
 }
