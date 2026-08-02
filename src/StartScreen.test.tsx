@@ -55,12 +55,13 @@ describe("StartScreen", () => {
       "aria-pressed",
       "true",
     );
-    expect(document.querySelectorAll(".library__tile")).toHaveLength(2);
-    // The covers fail to load (readPdfFile is stubbed to reject) and settle
-    // to a placeholder; wait for that so the state update lands inside this
-    // test rather than bleeding into the next one.
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    // The covers fail to load (readPdfFile is stubbed to reject) and settle to
+    // the initial-letter placeholder. Waited on so the state update lands
+    // inside this test rather than bleeding into the next one.
     await waitFor(() => {
-      expect(document.querySelectorAll(".cover__placeholder")).toHaveLength(2);
+      expect(screen.getByText("R")).toBeInTheDocument();
+      expect(screen.getByText("契")).toBeInTheDocument();
     });
   });
 
@@ -76,7 +77,10 @@ describe("StartScreen", () => {
     );
     expect(screen.getByText("Report.pdf")).toBeInTheDocument();
     expect(screen.getByText("契約書.pdf")).toBeInTheDocument();
-    expect(document.querySelectorAll(".recent__item")).toHaveLength(2);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    // No covers here: the initial-letter placeholders the grid falls back to
+    // are gone, which is what tells this view apart from the grid.
+    expect(screen.queryByText("R")).not.toBeInTheDocument();
   });
 
   it("keeps the chosen view across a remount by storing it", async () => {
@@ -105,7 +109,7 @@ describe("StartScreen", () => {
       "aria-pressed",
       "true",
     );
-    expect(document.querySelectorAll(".recent__item")).toHaveLength(2);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 
   it("filters files by name as the search box is typed into", async () => {
@@ -118,7 +122,7 @@ describe("StartScreen", () => {
     );
 
     await waitFor(() => {
-      expect(document.querySelectorAll(".library__tile")).toHaveLength(1);
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
     });
     expect(
       screen.getByRole("button", { name: "契約書.pdf を開く" }),

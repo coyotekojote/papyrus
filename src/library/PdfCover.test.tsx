@@ -52,7 +52,7 @@ describe("PdfCover", () => {
     render(<PdfCover path="/a/report-ready.pdf" name="report.pdf" />);
 
     await waitFor(() => {
-      expect(document.querySelector("img.cover__image")).not.toBeNull();
+      expect(document.querySelector("img")).not.toBeNull();
     });
     // 160 (COVER_WIDTH) / 100 (the page's own width): the cover is rendered at
     // exactly the width the grid reserves for it.
@@ -92,7 +92,7 @@ describe("PdfCover", () => {
     await waitFor(() => {
       expect(screen.getByText("R")).toBeInTheDocument();
     });
-    expect(document.querySelector("img.cover__image")).toBeNull();
+    expect(document.querySelector("img")).toBeNull();
     expect(consoleError).toHaveBeenCalledWith(
       "Failed to render the cover for /a/report-missing.pdf",
       cause,
@@ -150,9 +150,7 @@ describe("PdfCover", () => {
     /** Mounts a cover, waits for it to paint, then takes it back down. */
     const paint = async (path: string) => {
       const view = render(<PdfCover path={path} name="doc.pdf" />);
-      await waitFor(() =>
-        expect(document.querySelector("img.cover__image")).not.toBeNull(),
-      );
+      await waitFor(() => expect(document.querySelector("img")).not.toBeNull());
       view.unmount();
     };
 
