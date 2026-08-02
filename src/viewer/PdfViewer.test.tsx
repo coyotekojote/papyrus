@@ -128,6 +128,21 @@ function scroller(): HTMLElement {
   return element as HTMLElement;
 }
 
+/** Pixel width of a laid-out `.spread`. Every spread is the same width for a
+ * fixture whose pages are all the same size (as `fakeDoc`'s are), so this is
+ * enough to compute the `scrollLeft` a given single-page spread sits at. */
+function spreadWidthPx(): number {
+  const element = document.querySelector<HTMLElement>(".spread");
+  if (!element) throw new Error("no spread is currently rendered");
+  const width = Number.parseFloat(element.style.width);
+  if (!Number.isFinite(width) || width <= 0) {
+    throw new Error(
+      `could not read a usable spread width (got "${element.style.width}")`,
+    );
+  }
+  return width;
+}
+
 /**
  * A press and release at the given viewport coordinates. Built as MouseEvents
  * because jsdom has no PointerEvent, and fireEvent.pointerUp would then drop
@@ -490,7 +505,7 @@ describe("PdfViewer", () => {
       vi.mocked(doc.renderPage).mockClear();
       await scrollTo(9000);
 
-      await waitFor(() => {
+      const prefetchedPage = await waitFor(() => {
         const rendered = new Set(renderedPages());
         const prefetchCall = vi
           .mocked(doc.renderPage)
@@ -503,6 +518,24 @@ describe("PdfViewer", () => {
         // release the cache's own eviction uses for a canvas nobody needs.
         expect(prefetchCall?.[1].canvas.width).toBe(0);
         expect(prefetchCall?.[1].canvas.height).toBe(0);
+        return prefetchCall![0];
+      });
+
+      // The zeroing alone is not proof the page was never cached — a broken
+      // implementation that called `cache.set` *before* zeroing would leave
+      // a zero-size canvas sitting in the cache: a "hit" on the next scroll
+      // that paints nothing. Scrolling the discarded page into view and
+      // seeing `renderPage` run for it again is the behavioural proof that
+      // it was actually skipped, not cached blank.
+      vi.mocked(doc.renderPage).mockClear();
+      await scrollTo((prefetchedPage - 1) * spreadWidthPx());
+
+      await waitFor(() => {
+        expect(
+          vi
+            .mocked(doc.renderPage)
+            .mock.calls.some((call) => call[0] === prefetchedPage),
+        ).toBe(true);
       });
     });
 
