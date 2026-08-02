@@ -36,6 +36,12 @@ describe("createBookmarkFor", () => {
 
     expect(await createBookmarkFor("/Papers/attention.pdf")).toBeNull();
   });
+
+  it("returns null rather than throwing when the command rejects", async () => {
+    invoke.mockRejectedValue(new Error("bookmark creation failed"));
+
+    expect(await createBookmarkFor("/Papers/attention.pdf")).toBeNull();
+  });
 });
 
 describe("resolveBookmark", () => {

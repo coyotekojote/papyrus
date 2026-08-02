@@ -322,12 +322,18 @@ export function PdfViewer({
   bindingRef.current = binding;
   // Read inside the pinch listener, for the same reason.
   const zoomRef = useRef(zoom);
-  zoomRef.current = zoom;
   /** A pinch starting while a clip drag is being made would fight it for the
    * same two fingers; read inside the pointerdown listener to keep it from
    * starting one. */
   const clipModeRef = useRef(clipMode);
-  clipModeRef.current = clipMode;
+  // Written after the commit rather than during the render: React can throw
+  // a render away and redo it, and a discarded render must not leave these
+  // pointing at state that never became the UI. (Same reasoning as the
+  // createClipRef/dragRef effect further down.)
+  useEffect(() => {
+    zoomRef.current = zoom;
+    clipModeRef.current = clipMode;
+  });
 
   /** Spreads in scroll order: reversed for a right-bound book. */
   const domSpreads = useMemo(
@@ -571,8 +577,17 @@ export function PdfViewer({
         x: event.clientX,
         y: event.clientY,
       });
+      // Exactly two, and none earlier in this gesture: a pinch begins only
+      // when the second finger joins the first. Once a pinch has run and
+      // ended (one of its fingers lifted), whatever fingers remain down —
+      // a stray palm among them, often enough — must not seed a new one;
+      // lifting everything is what arms the next pinch.
       const ids = Array.from(pinchPointersRef.current.keys());
-      if (ids.length >= 2 && pinchStateRef.current === null) {
+      if (
+        ids.length === 2 &&
+        !pinchOccurredRef.current &&
+        pinchStateRef.current === null
+      ) {
         const pointers = [ids[0], ids[1]] as const;
         const state = { pointers };
         const points = pinchPoints(state);
@@ -613,8 +628,9 @@ export function PdfViewer({
       pinchPointersRef.current.delete(event.pointerId);
       // Either of the pinch's own fingers lifting ends the pinch. Fingers
       // that were never part of it (a stray palm) come and go freely — but
-      // the gesture is not over until every finger is up, and no new pinch
-      // starts mid-gesture: `onPointerDown` alone begins one.
+      // the gesture is not over until every finger is up: `pinchOccurredRef`
+      // stays set until then, keeping the release from reading as a click
+      // and (see `onPointerDown`) blocking a new pinch from starting.
       if (pinchStateRef.current?.pointers.includes(event.pointerId)) {
         pinchStateRef.current = null;
       }

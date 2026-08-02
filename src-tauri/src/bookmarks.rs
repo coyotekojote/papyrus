@@ -48,8 +48,18 @@ mod imp {
     use super::{decode_bookmark, encode_bookmark};
 
     pub fn create_bookmark(path: &str) -> Result<Option<String>, String> {
+        // What the document picker hands the frontend — and what comes back
+        // here — is a `file://` URL string, not a filesystem path.
+        // `fileURLWithPath` would swallow that string as a literal path
+        // component and bookmark a location that does not exist, so the URL
+        // form gets `URLWithString` and only a plain path (a caller that got
+        // one from somewhere else) goes through `fileURLWithPath`.
         let ns_path = NSString::from_str(path);
-        let url = NSURL::fileURLWithPath(&ns_path);
+        let url = if path.starts_with("file://") {
+            NSURL::URLWithString(&ns_path).ok_or_else(|| format!("not a valid file URL: {path}"))?
+        } else {
+            NSURL::fileURLWithPath(&ns_path)
+        };
         // macOS's `.withSecurityScope` creation option is not available on
         // iOS (there is no separate sandbox extension to request it for): an
         // iOS app is sandboxed as a whole, so a plain bookmark is enough.

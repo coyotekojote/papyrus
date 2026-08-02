@@ -28,10 +28,16 @@ export async function pickPdfFile(): Promise<string | null> {
  * Security-scoped bookmark for `path` (issue #11), so a document picked on
  * iOS can still be opened after the app relaunches. `create_bookmark` returns
  * `null` on every other platform, where a saved path keeps working on its own
- * and no bookmark is needed.
+ * and no bookmark is needed. A failure also becomes `null`: a bookmark is a
+ * convenience for the *next* launch, and failing to make one must not stop
+ * the file the reader just picked from opening now.
  */
 export async function createBookmarkFor(path: string): Promise<string | null> {
-  return invoke<string | null>("create_bookmark", { path });
+  try {
+    return await invoke<string | null>("create_bookmark", { path });
+  } catch {
+    return null;
+  }
 }
 
 /**
