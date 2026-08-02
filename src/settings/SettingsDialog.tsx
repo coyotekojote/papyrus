@@ -10,6 +10,15 @@ import {
   type TranslationProviderId,
 } from "./settings";
 
+/** What Tab can reach inside the dialog, in document order. */
+const FOCUSABLE =
+  "button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex='-1'])";
+
+function focusableWithin(root: HTMLElement | null): HTMLElement[] {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE));
+}
+
 export interface SettingsDialogProps {
   settings: Settings;
   /** False while the settings are still being read; the form waits for them. */
@@ -42,7 +51,16 @@ export function SettingsDialog({
 
   // Focus moves into the dialog so Escape and the tab order belong to it —
   // and so the viewer's page-turn shortcuts are not what the keyboard hits.
-  useEffect(() => dialogRef.current?.focus(), []);
+  // On the way out it goes back where it came from, so closing the dialog
+  // does not drop a keyboard user at the top of the page.
+  useEffect(() => {
+    const opener =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    dialogRef.current?.focus();
+    return () => opener?.focus();
+  }, []);
 
   const setDraft = (provider: TranslationProviderId, value: string) =>
     setDrafts((current) => ({ ...current, [provider]: value }));
@@ -61,7 +79,31 @@ export function SettingsDialog({
   // key into this dialog would otherwise do.
   const handleKeyDown = (event: KeyboardEvent) => {
     event.stopPropagation();
-    if (event.key === "Escape") onClose();
+    if (event.key === "Escape") {
+      onClose();
+      return;
+    }
+    // `aria-modal` tells a screen reader the rest of the page is inert; it
+    // does not stop Tab from walking out of the dialog into the buttons
+    // behind it — where this handler no longer runs, so the shortcuts it is
+    // holding back would fire again. The cycle keeps focus in here.
+    if (event.key !== "Tab") return;
+    const focusable = focusableWithin(dialogRef.current);
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      // Nothing to tab to: keep focus on the panel rather than let it leave.
+      event.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === dialogRef.current)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
   };
 
   return (
@@ -268,7 +310,11 @@ export function SettingsDialog({
           <ul className="keys">
             {TRANSLATION_PROVIDERS.map((provider) => {
               const configured = keys.configured?.[provider.id] ?? false;
-              const busy = keys.busy === provider.id;
+              // Every row waits, not just the one being written: the hook
+              // tracks one operation at a time, so a second one started
+              // underneath the first would take over its "in flight" mark and
+              // clear it early — leaving the screen looking idle mid-write.
+              const busy = keys.busy !== null;
               const inputId = `api-key-${provider.id}`;
               return (
                 <li className="keys__item" key={provider.id}>

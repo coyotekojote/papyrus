@@ -49,6 +49,23 @@ async function renderDialog(settings: Settings = defaultSettings()) {
   return { onChange, onClose, user: userEvent.setup() };
 }
 
+/** Same, but hands back the unmount handle for the focus-restore check. */
+async function renderDialogWithHandle(settings: Settings = defaultSettings()) {
+  let handle!: ReturnType<typeof render>;
+  await act(async () => {
+    handle = render(
+      <SettingsDialog
+        settings={settings}
+        loaded
+        error={null}
+        onChange={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+  });
+  return handle;
+}
+
 /**
  * Renders with the reported changes fed back in, as the app does. Needed for
  * anything typed: the dialog is controlled, so a spy that swallows the change
@@ -329,6 +346,74 @@ describe("SettingsDialog", () => {
 
     await user.click(document.querySelector(".modal") as HTMLElement);
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps Tab inside the dialog rather than letting it walk out", async () => {
+    const behind = document.createElement("button");
+    behind.textContent = "背後のボタン";
+    document.body.append(behind);
+    const { user } = await renderDialog();
+
+    const focusable = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".modal__panel :is(button, input, select):not(:disabled)",
+      ),
+    );
+    const [first, last] = [focusable[0], focusable.at(-1)!];
+
+    last.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(first);
+
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(last);
+    // Whatever happens, focus never reaches the page behind the modal, where
+    // this dialog's key handling no longer runs.
+    expect(document.activeElement).not.toBe(behind);
+
+    behind.remove();
+  });
+
+  it("puts focus back where it came from when it closes", async () => {
+    const opener = document.createElement("button");
+    document.body.append(opener);
+    opener.focus();
+
+    const { unmount } = await renderDialogWithHandle();
+    expect(document.activeElement).not.toBe(opener);
+
+    unmount();
+    expect(document.activeElement).toBe(opener);
+
+    opener.remove();
+  });
+
+  it("holds every row while one key is being written", async () => {
+    let finishSave = () => {};
+    vi.mocked(saveApiKey).mockReturnValue(
+      new Promise((resolve) => {
+        finishSave = () => resolve(undefined);
+      }),
+    );
+    const { user } = await renderDialog();
+    await waitFor(() => expect(apiKeyStatus).toHaveBeenCalled());
+
+    await user.type(screen.getByLabelText("Claude"), "sk-ant-123");
+    await user.click(screen.getAllByRole("button", { name: "保存" })[0]);
+
+    // The hook tracks one operation at a time: a second one started here
+    // would take over the first's "in flight" mark and clear it early.
+    for (const button of screen.getAllByRole("button", { name: "削除" })) {
+      expect(button).toBeDisabled();
+    }
+    expect(screen.getByLabelText("OpenAI")).toBeDisabled();
+
+    await act(async () => {
+      finishSave();
+    });
+    await waitFor(() =>
+      expect(screen.getByLabelText("OpenAI")).not.toBeDisabled(),
+    );
   });
 
   it("keeps keystrokes away from the shortcuts behind it", async () => {

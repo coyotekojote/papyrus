@@ -2,9 +2,18 @@ import { describe, expect, it } from "vitest";
 import { describeError, toError } from "./backend-error";
 
 describe("backend errors", () => {
-  it("names the setting that could not be written", () => {
-    expect(describeError({ kind: "io", message: "permission denied" })).toBe(
+  it("says which half of the file access failed", () => {
+    const failure = { kind: "io", message: "permission denied" };
+
+    expect(toError(failure, "load").message).toBe(
+      "設定を読み込めませんでした: permission denied",
+    );
+    expect(toError(failure, "save").message).toBe(
       "設定を保存できませんでした: permission denied",
+    );
+    // Without an operation the message commits to neither.
+    expect(describeError(failure)).toBe(
+      "設定を読み書きできませんでした: permission denied",
     );
   });
 

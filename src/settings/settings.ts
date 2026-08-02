@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Binding, ViewMode } from "../viewer/spreads";
-import { toError } from "./backend-error";
+import { toError, type SettingsOperation } from "./backend-error";
 
 /**
  * App-wide settings (issue #9).
@@ -221,20 +221,23 @@ export function normalizeSettings(value: unknown): Settings {
 
 async function invokeSettings(
   command: string,
+  operation: SettingsOperation,
   args?: Record<string, unknown>,
 ): Promise<Settings> {
   try {
     return normalizeSettings(await invoke(command, args));
   } catch (error) {
-    throw toError(error);
+    // The operation is passed along so a failure says which half of the file
+    // access went wrong: the same backend error covers both.
+    throw toError(error, operation);
   }
 }
 
 export function loadSettings(): Promise<Settings> {
-  return invokeSettings("load_settings");
+  return invokeSettings("load_settings", "load");
 }
 
 /** Resolves to the settings as stored, which may differ from what was sent. */
 export function saveSettings(settings: Settings): Promise<Settings> {
-  return invokeSettings("save_settings", { settings });
+  return invokeSettings("save_settings", "save", { settings });
 }

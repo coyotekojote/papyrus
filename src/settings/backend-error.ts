@@ -10,10 +10,29 @@ interface BackendError {
   provider?: string;
 }
 
-const MESSAGES: Record<string, (error: BackendError) => string> = {
+/**
+ * Which side of the settings file failed, for the errors that can happen on
+ * either. Telling a reader their settings could not be *saved* when the read
+ * is what failed sends them looking for the wrong problem.
+ */
+export type SettingsOperation = "load" | "save";
+
+const IO_MESSAGE: Record<SettingsOperation | "unknown", string> = {
+  load: "設定を読み込めませんでした",
+  save: "設定を保存できませんでした",
+  unknown: "設定を読み書きできませんでした",
+};
+
+type Describe = (
+  error: BackendError,
+  operation: SettingsOperation | "unknown",
+) => string;
+
+const MESSAGES: Record<string, Describe> = {
   configDirUnavailable: () => "設定の保存先フォルダが見つかりません",
   serialize: () => "設定を書き出せませんでした",
-  io: (error) => `設定を保存できませんでした: ${error.message ?? ""}`.trim(),
+  io: (error, operation) =>
+    `${IO_MESSAGE[operation]}: ${error.message ?? ""}`.trim(),
   unknownProvider: (error) =>
     `対応していない翻訳プロバイダです: ${error.provider ?? ""}`.trim(),
   emptyKey: () => "APIキーが入力されていません",
@@ -29,7 +48,7 @@ function isBackendError(error: unknown): error is BackendError {
   );
 }
 
-export function toError(error: unknown): Error {
+export function toError(error: unknown, operation?: SettingsOperation): Error {
   if (error instanceof Error) return error;
   if (isBackendError(error)) {
     const describe = MESSAGES[error.kind];
@@ -37,7 +56,7 @@ export function toError(error: unknown): Error {
     // error this one has no wording for should not go out as a blank message.
     return new Error(
       describe
-        ? describe(error)
+        ? describe(error, operation ?? "unknown")
         : `${error.kind}: ${error.message ?? ""}`.trim(),
     );
   }

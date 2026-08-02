@@ -146,19 +146,27 @@ describe("loadSettings", () => {
     expect(invoke).toHaveBeenCalledWith("load_settings", undefined);
   });
 
-  it("turns a backend failure into a readable message", async () => {
+  it("says the settings could not be read, not written", async () => {
     vi.mocked(invoke).mockRejectedValue({
       kind: "io",
       message: "permission denied",
     });
 
     await expect(loadSettings()).rejects.toThrow(
-      "設定を保存できませんでした: permission denied",
+      "設定を読み込めませんでした: permission denied",
     );
   });
 });
 
 describe("saveSettings", () => {
+  it("says the settings could not be written, not read", async () => {
+    vi.mocked(invoke).mockRejectedValue({ kind: "io", message: "disk full" });
+
+    await expect(saveSettings(stored)).rejects.toThrow(
+      "設定を保存できませんでした: disk full",
+    );
+  });
+
   it("sends the settings and resolves to what was actually stored", async () => {
     vi.mocked(invoke).mockResolvedValue({
       ...stored,
