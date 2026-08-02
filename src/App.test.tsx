@@ -210,11 +210,11 @@ describe("App start screen", () => {
         expect(screen.getByText("page-sizes-count:32")).toBeInTheDocument();
       });
       const countBeforeClose = getPageSizeCalls.length;
-      // The next chunk (33-64) is already in flight at this point — invoked
+      // firstChunk=32, chunkSize=32: pages 1-32 make up the first chunk, and
+      // the next chunk (33-64) is already in flight at this point — invoked
       // eagerly as part of the same continuation that resolved the first
-      // chunk — but gated, so it cannot have completed yet.
-      expect(countBeforeClose).toBeGreaterThan(32);
-      expect(countBeforeClose).toBeLessThan(200);
+      // chunk — but gated, so it cannot have completed yet. 64 calls total.
+      expect(countBeforeClose).toBe(64);
 
       await act(async () => {
         await user.click(screen.getByRole("button", { name: "← ライブラリ" }));
@@ -228,11 +228,16 @@ describe("App start screen", () => {
       // resolves; this is what proves it does not.
       await act(async () => {
         release();
-        // Let the now-resolved chunk's `.then` continuation, and the loop's
-        // subsequent abort check, run.
-        await Promise.resolve();
-        await Promise.resolve();
-        await Promise.resolve();
+        // A single macrotask flush, not a fixed number of microtask ticks:
+        // `loadPageSizesProgressive`'s background loop is plain promise
+        // chaining with no timers of its own, so by the time a `setTimeout`
+        // callback (queued as a macrotask) actually runs, every microtask
+        // already queued — the released chunk's `.then`, the loop's abort
+        // check, and (were the check missing or broken) the next chunk's
+        // `getPageSize` calls — has necessarily drained first. A fixed count
+        // of `Promise.resolve()` awaits would pass even with a broken abort
+        // check, as long as the next chunk happened to start one tick later.
+        await new Promise((resolve) => setTimeout(resolve, 0));
       });
       expect(getPageSizeCalls.length).toBe(countBeforeClose);
     });
