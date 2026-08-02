@@ -138,7 +138,7 @@ describe("prefetchRange", () => {
     });
   });
 
-  it("returns empty ranges on both sides when count is 0", () => {
+  it("empties the ahead side when count is 0, but keeps behind at its fixed 0-1 floor", () => {
     const range = { start: 3, end: 5 };
     expect(prefetchRange(layout, range, "forward", 0)).toEqual({
       ahead: { start: 5, end: 5 },

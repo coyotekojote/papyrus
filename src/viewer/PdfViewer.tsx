@@ -393,6 +393,11 @@ export function PdfViewer({
     () => visibleRange(layout, scrollLeft, viewportWidth, OVERSCAN),
     [layout, scrollLeft, viewportWidth],
   );
+  // Destructured for the prefetch effect below: `range` is a fresh object on
+  // every recompute even when its bounds have not moved, and depending on it
+  // directly would abort (and thus never finish) an in-flight prefetch on
+  // every single scroll event's re-render.
+  const { start: rangeStart, end: rangeEnd } = range;
 
   /**
    * Warms the render cache for pages just outside the synchronously rendered
@@ -405,10 +410,11 @@ export function PdfViewer({
    */
   useEffect(() => {
     if (total === 0) return;
+    const currentRange = { start: rangeStart, end: rangeEnd };
 
     const target = prefetchRange(
       layout,
-      range,
+      currentRange,
       scrollDirectionRef.current,
       PREFETCH_COUNT,
     );
@@ -423,13 +429,13 @@ export function PdfViewer({
     const pageNumbers = new Set<number>();
     for (const domIndex of domIndices) {
       // Already in the synchronous render range: PageCanvas already covers it.
-      if (rangeIncludes(range, domIndex)) continue;
+      if (rangeIncludes(currentRange, domIndex)) continue;
       for (const pageNumber of domSpreads[domIndex] ?? []) {
         pageNumbers.add(pageNumber);
       }
     }
     const pending = Array.from(pageNumbers).filter(
-      (pageNumber) => !cache.get(pageNumber, zoom),
+      (pageNumber) => !cache.has(pageNumber, zoom),
     );
     if (pending.length === 0) return;
 
@@ -445,7 +451,7 @@ export function PdfViewer({
       if (controller.signal.aborted) return;
       const pageNumber = pending.shift();
       if (pageNumber === undefined) return;
-      if (cache.get(pageNumber, zoom)) {
+      if (cache.has(pageNumber, zoom)) {
         // Warmed by something else (the visible range's own render, most
         // likely) since this was queued: move on without re-rendering it.
         idleHandle = scheduleIdle(warmNext);
@@ -482,7 +488,7 @@ export function PdfViewer({
       controller.abort();
       if (idleHandle !== null) cancelIdle(idleHandle);
     };
-  }, [range, layout, domSpreads, doc, cache, zoom, total]);
+  }, [rangeStart, rangeEnd, layout, domSpreads, doc, cache, zoom, total]);
 
   // Measure the scroll viewport; every layout number below depends on it.
   useEffect(() => {

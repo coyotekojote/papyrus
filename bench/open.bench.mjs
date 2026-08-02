@@ -98,7 +98,7 @@ async function main() {
   summarize("getDocument", open);
   summarize(`first ${PAGE_SIZE_CHUNK} page sizes`, firstChunk);
   summarize("all page sizes", allSizes);
-  summarize("open + all page sizes (current openPath blocking cost)", total);
+  summarize("open + all page sizes (pre-#12 openPath blocking cost)", total);
 }
 
 await main();

@@ -150,18 +150,29 @@ class PdfJsDocument implements PdfDocumentHandle {
     const isFirstRender = !this.firstRenderMarked;
     this.firstRenderMarked = true;
     if (isFirstRender) markStart("pdfjs:first-render-page");
+    // Shared by every early exit below: none of them ever reached pdf.js's
+    // own render call, so nothing was actually timed. Without this, the
+    // start mark above would sit unmeasured forever (`firstRenderMarked`
+    // already latched) and no later call would get a chance to time the page
+    // the reader actually first sees rendered.
+    const abandonFirstRenderMark = () => {
+      if (!isFirstRender) return;
+      clearStart("pdfjs:first-render-page");
+      this.firstRenderMarked = false;
+    };
 
-    const page = await this.page(pageNumber);
+    let page: PDFPageProxy;
+    try {
+      page = await this.page(pageNumber);
+    } catch (cause) {
+      // An out-of-range page, most often — a document switch racing a stale
+      // page number is not unusual.
+      abandonFirstRenderMark();
+      throw cause;
+    }
     if (signal?.aborted || this.destroyed) {
-      // Abandoned before it ever reached pdf.js's own render call — a
-      // document switch racing the first page is not unusual. Without this,
-      // the start mark above would sit unmeasured forever (`firstRenderMarked`
-      // already latched) and no later call would get a chance to time the
-      // page the reader actually first sees rendered.
-      if (isFirstRender) {
-        clearStart("pdfjs:first-render-page");
-        this.firstRenderMarked = false;
-      }
+      // A document switch racing the first page itself, this time.
+      abandonFirstRenderMark();
       return;
     }
 
@@ -324,6 +335,14 @@ export class PdfJsRenderer implements PdfRenderer {
     try {
       const doc = await loadingTask.promise;
       return new PdfJsDocument(doc, loadingTask);
+    } catch (cause) {
+      // A failed load still spins up worker-side state (`PDFWorker.create`
+      // runs per loading task); left undestroyed, that worker would leak for
+      // as long as the app stays open. `destroy()`'s own failure is not worth
+      // masking the real error behind — it is best-effort cleanup on top of
+      // a load that already failed.
+      await loadingTask.destroy().catch(() => {});
+      throw cause;
     } finally {
       markEnd("pdfjs:open");
     }

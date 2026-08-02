@@ -435,18 +435,24 @@ describe("PdfViewer", () => {
       vi.mocked(doc.renderPage).mockClear();
 
       await scrollTo(9000);
+      // Both the "is there a call at all" and the "is one of them a
+      // prefetch" checks live inside `waitFor`: the first `renderPage` call
+      // to land after the scroll is usually the synchronous visible-range
+      // render, and only the idle-scheduled prefetch call afterwards is what
+      // this asserts on — checking once, as soon as any call exists, would
+      // be flaky. `rendered` is read fresh on every poll too, since the
+      // visible set the synchronous render targets keeps settling for a few
+      // ticks after the scroll.
       await waitFor(() => {
-        expect(vi.mocked(doc.renderPage).mock.calls.length).toBeGreaterThan(0);
+        const rendered = new Set(renderedPages());
+        const prefetchedOnly = vi
+          .mocked(doc.renderPage)
+          .mock.calls.map((call) => call[0])
+          .filter((page) => !rendered.has(page));
+        // At least one call was for a page prefetch alone warmed the cache
+        // for — it rendered into an offscreen canvas, not one on screen.
+        expect(prefetchedOnly.length).toBeGreaterThan(0);
       });
-
-      const rendered = new Set(renderedPages());
-      const prefetchedOnly = vi
-        .mocked(doc.renderPage)
-        .mock.calls.map((call) => call[0])
-        .filter((page) => !rendered.has(page));
-      // At least one call was for a page prefetch alone warmed the cache
-      // for — it rendered into an offscreen canvas, not one on screen.
-      expect(prefetchedOnly.length).toBeGreaterThan(0);
     });
 
     it("gives a prefetched canvas the same page__canvas class as an on-screen one", async () => {
@@ -468,7 +474,7 @@ describe("PdfViewer", () => {
       });
     });
 
-    it("cancels a pending prefetch when the document is replaced", async () => {
+    it("cancels a pending prefetch when the component unmounts", async () => {
       const { doc, unmount } = renderViewer(200);
       await scrollTo(3000);
       vi.mocked(doc.renderPage).mockClear();
@@ -481,6 +487,39 @@ describe("PdfViewer", () => {
       // should, and the call count must not grow after teardown.
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(vi.mocked(doc.renderPage).mock.calls.length).toBe(countAtUnmount);
+    });
+
+    it("cancels a pending prefetch when the document prop is replaced (no unmount)", async () => {
+      // Same scenario as above, but the component itself stays mounted — only
+      // its `doc` prop changes, the way App.tsx swaps documents on `openPath`.
+      // The prefetch effect's own cleanup (not an unmount) is what must catch
+      // this: without it, the old document's renderer would keep receiving
+      // idle-scheduled prefetch calls for a document nobody can see any more.
+      const docA = fakeDoc(200);
+      const docB = fakeDoc(200);
+      const onClose = vi.fn();
+      const view = (doc: PdfDocumentHandle) => (
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(200)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={onClose}
+        />
+      );
+      const { rerender } = render(view(docA));
+
+      await scrollTo(3000);
+      vi.mocked(docA.renderPage).mockClear();
+      await scrollTo(9000);
+
+      rerender(view(docB));
+      const countAtSwap = vi.mocked(docA.renderPage).mock.calls.length;
+
+      // Give any timer that survived the swap a chance to fire; none should
+      // land on the old document.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(vi.mocked(docA.renderPage).mock.calls.length).toBe(countAtSwap);
     });
   });
 

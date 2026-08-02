@@ -34,6 +34,14 @@ export class LruCache<K, V> {
     return value;
   }
 
+  /** Like {@link get}, but does not mark the entry as recently used — for a
+   * caller that only wants to look, not touch (a mere existence/staleness
+   * check must not push some other, genuinely-in-use entry towards eviction
+   * on its behalf). */
+  peek(key: K): V | undefined {
+    return this.entries.get(key);
+  }
+
   set(key: K, value: V): void {
     const previous = this.entries.get(key);
     if (this.entries.delete(key) && previous !== value) {

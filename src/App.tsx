@@ -19,7 +19,7 @@ import {
   type PageSize,
   type PdfDocumentHandle,
 } from "./pdf";
-import { markEnd, markStart } from "./perf/marks";
+import { clearStart, markEnd, markStart } from "./perf/marks";
 import { SettingsDialog } from "./settings/SettingsDialog";
 import { useSettings } from "./settings/use-settings";
 import { StartScreen } from "./StartScreen";
@@ -99,7 +99,16 @@ function App() {
       setError(null);
       try {
         markStart("app:read-file");
-        const bytes = await readPdfFileWithBookmark(path, bookmark);
+        let bytes: Uint8Array;
+        try {
+          bytes = await readPdfFileWithBookmark(path, bookmark);
+        } catch (cause) {
+          // A missing/unreadable file never reaches markEnd below — without
+          // this the start mark would sit unmeasured forever, the same
+          // problem `clearStart` exists for elsewhere in this codebase.
+          clearStart("app:read-file");
+          throw cause;
+        }
         markEnd("app:read-file");
         const renderer = await loadDefaultRenderer();
         const doc = await renderer.open(bytes);
@@ -128,11 +137,14 @@ function App() {
         // Loading the rest is not on openPath's critical path — the viewer
         // lays out fine with FALLBACK_PAGE_SIZE for pages not read yet, and
         // onProgress above is what carries the real sizes in as they arrive.
-        pageSizesDone.catch(() => {
+        pageSizesDone.catch((cause: unknown) => {
           // A failed background page size never reaches here (loadPageSizes*
-          // falls back to FALLBACK_PAGE_SIZE internally) — this only guards
-          // against the promise itself rejecting unexpectedly, so it cannot
-          // become an unhandled rejection.
+          // falls back to FALLBACK_PAGE_SIZE internally), so a rejection here
+          // is unexpected — logged rather than silently swallowed, so a bug
+          // in that fallback is not invisible, without turning into an
+          // unhandled rejection or interrupting the document that already
+          // opened successfully.
+          console.error("Background page-size load failed unexpectedly", cause);
         });
 
         const previous = openDocumentRef.current;

@@ -60,6 +60,45 @@ describe("PageRenderCache", () => {
     expect(cache.get(1, 1)).toBeUndefined();
   });
 
+  describe("has", () => {
+    it("returns false for a page that was never rendered", () => {
+      expect(new PageRenderCache().has(1, 1)).toBe(false);
+    });
+
+    it("returns true for a page cached at the same scale", () => {
+      const cache = new PageRenderCache();
+      cache.set(3, 1.5, canvas());
+
+      expect(cache.has(3, 1.5)).toBe(true);
+    });
+
+    it("returns false for a stale scale, without evicting the entry", () => {
+      const cache = new PageRenderCache();
+      cache.set(3, 1, canvas());
+
+      expect(cache.has(3, 2)).toBe(false);
+      // Unlike `get`, a stale-scale `has` is read-only: the entry (at its
+      // original scale) is still there afterwards.
+      expect(cache.size).toBe(1);
+      expect(cache.has(3, 1)).toBe(true);
+    });
+
+    it("does not change eviction order the way get() does", () => {
+      const cache = new PageRenderCache(2);
+      cache.set(1, 1, canvas());
+      cache.set(2, 1, canvas());
+
+      // `get` would have promoted page 1 to most-recently-used; `has` must
+      // not, so page 1 is still the one capacity eviction drops next.
+      expect(cache.has(1, 1)).toBe(true);
+      cache.set(3, 1, canvas());
+
+      expect(cache.has(1, 1)).toBe(false);
+      expect(cache.has(2, 1)).toBe(true);
+      expect(cache.has(3, 1)).toBe(true);
+    });
+  });
+
   describe("pixel budget", () => {
     it("rejects a non-positive pixel budget", () => {
       expect(() => new PageRenderCache(12, 0)).toThrow(RangeError);

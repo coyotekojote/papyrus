@@ -195,4 +195,66 @@ describe("PdfJsRenderer first-render mark (issue #12 self-review)", () => {
     expect(debugSpy).toHaveBeenCalledTimes(1);
     expect(debugSpy.mock.calls[0][0]).toContain("pdfjs:first-render-page");
   });
+
+  it("re-arms the first-render mark when the page fetch itself rejects (e.g. out of range)", async () => {
+    const doc = await new PdfJsRenderer().open(new Uint8Array());
+    debugSpy.mockClear();
+
+    // Never reaches `this.page(pageNumber)` resolving, let alone pdf.js's
+    // own render call — nothing was actually timed here either.
+    await expect(
+      doc.renderPage(9999, {
+        scale: 1,
+        canvas: document.createElement("canvas"),
+      }),
+    ).rejects.toThrow(/out of range/i);
+    expect(
+      performance.getEntriesByName("pdfjs:first-render-page:start", "mark"),
+    ).toHaveLength(0);
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    const canvas = document.createElement("canvas");
+    vi.spyOn(canvas, "getContext").mockReturnValue(
+      {} as unknown as CanvasRenderingContext2D,
+    );
+    await doc.renderPage(1, { scale: 1, canvas });
+
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy.mock.calls[0][0]).toContain("pdfjs:first-render-page");
+  });
+});
+
+describe("PdfJsRenderer.open error handling (issue #12 self-review)", () => {
+  beforeEach(() => {
+    getDocument.mockClear();
+  });
+
+  it("destroys the loading task when getDocument's own promise rejects", async () => {
+    const destroy = vi.fn(async () => {});
+    const loadError = new Error("corrupt PDF");
+    getDocument.mockReturnValueOnce({
+      promise: Promise.reject(loadError),
+      destroy,
+    });
+
+    await expect(new PdfJsRenderer().open(new Uint8Array())).rejects.toBe(
+      loadError,
+    );
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("still rejects with the original error when destroy itself also fails", async () => {
+    const loadError = new Error("corrupt PDF");
+    getDocument.mockReturnValueOnce({
+      promise: Promise.reject(loadError),
+      destroy: vi.fn(async () => {
+        throw new Error("destroy failed too");
+      }),
+    });
+
+    await expect(new PdfJsRenderer().open(new Uint8Array())).rejects.toBe(
+      loadError,
+    );
+  });
 });

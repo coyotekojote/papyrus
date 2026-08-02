@@ -24,7 +24,7 @@ Node ビルド（`pdfjs-dist/legacy/build/pdf.mjs`、`disableWorker: true`）で
 Node には `HTMLCanvasElement` がなく、ラスタ描画（`renderPage`）を測るには `canvas` パッケージの
 ネイティブ依存が要る。今回はそこまでは入れず、ラスタ描画は次項の dev 計測に任せている。
 
-```
+```bash
 npm run bench
 ```
 
@@ -60,20 +60,20 @@ npm run bench
 
 改善前（このリポジトリのタスク1完了時点、`bench.pdf` = 300ページ・365KiB、5回実行）:
 
-```
+```text
 getDocument: mean=13.5ms median=7.8ms min=6.4ms max=38.5ms
 first 32 page sizes: mean=0.8ms median=0.9ms min=0.3ms max=1.5ms
 all page sizes: mean=5.5ms median=5.5ms min=4.4ms max=6.9ms
-open + all page sizes (旧 openPath のブロッキングコスト): mean=19.0ms median=12.4ms min=12.1ms max=45.4ms
+open + all page sizes (pre-#12 openPath blocking cost): mean=19.0ms median=12.4ms min=12.1ms max=45.4ms
 ```
 
 改善後（タスク5完了時点、同一フィクスチャ、5回実行）:
 
-```
+```text
 getDocument: mean=14.3ms median=8.0ms min=6.4ms max=41.8ms
 first 32 page sizes: mean=0.8ms median=0.8ms min=0.4ms max=1.6ms
 all page sizes: mean=5.7ms median=5.6ms min=4.7ms max=7.3ms
-open + all page sizes: mean=20.0ms median=12.8ms min=12.4ms max=49.0ms
+open + all page sizes (pre-#12 openPath blocking cost): mean=20.0ms median=12.8ms min=12.4ms max=49.0ms
 ```
 
 見ての通り pdf.js 自体の速度は誤差の範囲で変わっていない（想定通り）。読み取るべきは：
@@ -94,13 +94,12 @@ open + all page sizes: mean=20.0ms median=12.8ms min=12.4ms max=49.0ms
 `Map` で無制限に溜めていたのを、既存の `LruCache`（`src/pdf/lru-cache.ts`）に置き換え、
 容量64に制限した。evict 時は該当ページの `Promise` に `.then` を繋いで、解決済みなら
 `page.cleanup()` を呼ぶ（未解決の in-flight なら解決を待ってから呼ぶ）。`cleanup()` は
-レンダリング中など呼べない場合 `false` を返すだけで例外にはならないため、戻り値は無視している
-（呼べなかった分は次に evict されるタイミングで pdf.js 側が改めて機会を持つ）。
+レンダリング中など呼べない場合 `false` を返すだけで例外にはならないため、戻り値は無視している。
 
 ### `PageRenderCache`（描画済み canvas キャッシュ、`src/viewer/page-cache.ts`）
 
 枚数上限12はそのまま「安全弁」として残しつつ、総ピクセル数バジェット（既定
-`DEFAULT_PIXEL_BUDGET = 64,000,000` ≒ RGBA 256MiB）を追加した。`set` のたびに
+`DEFAULT_PIXEL_BUDGET = 64,000,000` ≒ RGBA 約256MB）を追加した。`set` のたびに
 `canvas.width * canvas.height` を積算し、バジェットを超えたら LRU の順で evict する。
 挿入した1枚だけでバジェットを超える場合でも、その1枚（＝直近に描画され、画面に出ている
 ページ）は破棄しない。高ズーム時にキャッシュがメモリを食い尽くすのを防ぎつつ、低ズーム時は

@@ -16,7 +16,7 @@ export const DEFAULT_PAGE_CACHE_CAPACITY = 12;
 
 /**
  * Total backing-store pixels the cache may hold across all its canvases, e.g.
- * ~256MiB of RGBA at 64,000,000 pixels. A flat page-count cap (the previous
+ * ~256MB of RGBA at 64,000,000 pixels (4 bytes/px). A flat page-count cap (the previous
  * policy) either wastes memory at low zoom, where 12 tiny canvases cost
  * nothing, or overruns it at high zoom, where 12 canvases can each be many
  * times the screen's own pixel count.
@@ -64,6 +64,20 @@ export class PageRenderCache {
       return undefined;
     }
     return entry.canvas;
+  }
+
+  /**
+   * Like {@link get}, but a read-only existence check: it does not promote
+   * the entry to most-recently-used, and (unlike `get`) never evicts a
+   * stale-scale hit either — a mere "is this warm" check has no business
+   * mutating the cache's own order or contents. Meant for callers deciding
+   * whether a page is worth rendering (e.g. the prefetch in `PdfViewer`),
+   * where doing so for a page nobody has scrolled to yet must not bump a
+   * page actually on screen closer to eviction.
+   */
+  has(pageNumber: number, scale: number): boolean {
+    const entry = this.cache.peek(pageNumber);
+    return entry !== undefined && entry.scale === scale;
   }
 
   set(pageNumber: number, scale: number, canvas: HTMLCanvasElement): void {

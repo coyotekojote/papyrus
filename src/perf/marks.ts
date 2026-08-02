@@ -12,8 +12,22 @@
 /** Suffix distinguishing this module's start marks from any others on the timeline. */
 const START_SUFFIX = ":start";
 
+/**
+ * Not just "does `performance` exist" — some older WebViews expose the
+ * global but not the full API this module calls (`mark`/`measure` are the
+ * oldest and most likely to be present; `getEntriesByName`/`clearMarks`/
+ * `clearMeasures` less certain). Checking each one is what actually backs
+ * the "safe to call anywhere" claim the functions below make.
+ */
 function hasPerformance(): boolean {
-  return typeof performance !== "undefined";
+  return (
+    typeof performance !== "undefined" &&
+    typeof performance.mark === "function" &&
+    typeof performance.measure === "function" &&
+    typeof performance.getEntriesByName === "function" &&
+    typeof performance.clearMarks === "function" &&
+    typeof performance.clearMeasures === "function"
+  );
 }
 
 /**
