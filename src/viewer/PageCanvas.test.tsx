@@ -176,6 +176,47 @@ describe("PageCanvas", () => {
     );
   });
 
+  it("clears the preview's perf mark and does not crash when the renderer throws synchronously", async () => {
+    // A plain (non-`async`) function, unlike the other tests' `fakeDoc` and
+    // its `async () => {}` mocks: throwing from inside one of those produces
+    // a *rejected promise*, which already reaches `.catch` without this
+    // fix. Only a genuinely synchronous throw — before any promise is ever
+    // returned — exercises the `Promise.resolve().then(...)` wrapper this
+    // regression test guards.
+    const doc = fakeDoc();
+    let call = 0;
+    vi.mocked(doc.renderPage).mockImplementation((): Promise<void> => {
+      call += 1;
+      if (call === 1) {
+        throw new Error("preview renderer threw synchronously");
+      }
+      return Promise.resolve();
+    });
+    const cache = new PageRenderCache();
+    const queue = new RenderQueue();
+
+    expect(() =>
+      render(
+        <PageCanvas
+          doc={doc}
+          cache={cache}
+          pageNumber={1}
+          scale={2}
+          width={LARGE_WIDTH}
+          height={LARGE_HEIGHT}
+          queue={queue}
+          priority="visible"
+        />,
+      ),
+    ).not.toThrow();
+
+    await waitFor(() =>
+      expect(vi.mocked(clearStart)).toHaveBeenCalledWith(
+        "viewer:preview-shown:1",
+      ),
+    );
+  });
+
   it("replaces the mounted canvas with the full-resolution one once it completes", async () => {
     const doc = fakeDoc();
     const fullCanvas = { current: null as HTMLCanvasElement | null };

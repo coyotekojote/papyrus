@@ -122,12 +122,18 @@ export function PageCanvas({
     host.replaceChildren(previewCanvas);
 
     const renderPreview = (signal: AbortSignal) =>
-      doc
-        .renderPage(pageNumber, {
-          scale: pScale,
-          canvas: previewCanvas,
-          signal,
-        })
+      // Wrapped in `Promise.resolve().then(...)` rather than calling
+      // `doc.renderPage` directly: a renderer that throws synchronously
+      // (instead of returning a rejected promise) would otherwise bypass
+      // the `.catch` below entirely, leaking `previewMark` unmeasured.
+      Promise.resolve()
+        .then(() =>
+          doc.renderPage(pageNumber, {
+            scale: pScale,
+            canvas: previewCanvas,
+            signal,
+          }),
+        )
         .then(() => {
           if (signal.aborted) return;
           // `renderPage` sets the canvas's own CSS size to match `pScale`;
@@ -152,8 +158,14 @@ export function PageCanvas({
     fullCanvas.className = "page__canvas";
 
     const renderFull = (signal: AbortSignal) =>
-      doc
-        .renderPage(pageNumber, { scale, canvas: fullCanvas, signal })
+      // Same reasoning as `renderPreview`'s wrapper above: a synchronous
+      // throw from `doc.renderPage` must still reach `fullTask`'s `.catch`
+      // below (which clears `fullMark` and reports the error), not escape
+      // as an unhandled exception.
+      Promise.resolve()
+        .then(() =>
+          doc.renderPage(pageNumber, { scale, canvas: fullCanvas, signal }),
+        )
         .then(() => {
           if (signal.aborted) return;
           cache.set(pageNumber, scale, fullCanvas);
@@ -176,6 +188,12 @@ export function PageCanvas({
     );
 
     fullTask.catch((cause: unknown) => {
+      // Unconditional — unlike the `setError` below, this is safe (and
+      // correct) to run even after an abort: it is a no-op if `fullMark`
+      // was already cleared or measured, and otherwise is exactly the
+      // cleanup that would be missed if `renderFull` threw synchronously
+      // before ever reaching its own `then`.
+      clearStart(fullMark);
       if (controller.signal.aborted) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     });
