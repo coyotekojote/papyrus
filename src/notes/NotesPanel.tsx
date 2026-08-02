@@ -77,6 +77,11 @@ export function NotesPanel({
       setDictationHintOpen(false);
       return;
     }
+    // Opening still needs the guard the button's `disabled` used to provide
+    // on its own: the button now stays enabled while the hint is open (so a
+    // conflict that appears mid-hint doesn't strand it open), which means
+    // this branch can no longer rely on disabled state blocking the click.
+    if (editorDisabled) return;
     editorRef.current?.focus();
     setDictationHintOpen(true);
   }
@@ -106,7 +111,11 @@ export function NotesPanel({
           <button
             type="button"
             className="notes__dictation-toggle"
-            disabled={editorDisabled}
+            // Disabled only blocks opening; once the hint is open it must
+            // stay closable even if the editor becomes disabled underneath
+            // it (e.g. a conflict shows up), or the only way out is
+            // switching to preview.
+            disabled={editorDisabled && !dictationHintOpen}
             aria-expanded={dictationHintOpen}
             aria-controls={dictationHintId}
             onClick={toggleDictationHint}

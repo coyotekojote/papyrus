@@ -112,4 +112,31 @@ describe("NotesPanel dictation button", () => {
 
     expect(screen.getByRole("button", { name: "音声入力" })).toBeDisabled();
   });
+
+  it("stays closable if a conflict appears while the hint is open", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<NotesPanel {...props()} />);
+
+    await user.click(screen.getByRole("button", { name: "音声入力" }));
+    expect(screen.getByText(/fn キーを2回押す/)).toBeInTheDocument();
+
+    // A conflict shows up mid-hint (e.g. another window saved notes.md).
+    // The button must not be stranded disabled with the hint stuck open.
+    rerender(<NotesPanel {...props({ conflict: "ファイルの内容" })} />);
+    const button = screen.getByRole("button", { name: "音声入力" });
+    expect(button).not.toBeDisabled();
+
+    await user.click(button);
+
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/fn キーを2回押す/)).not.toBeInTheDocument();
+  });
+
+  it("stays disabled while unloaded even if a hint could otherwise open", () => {
+    render(<NotesPanel {...props({ loaded: false })} />);
+
+    const button = screen.getByRole("button", { name: "音声入力" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-expanded", "false");
+  });
 });
