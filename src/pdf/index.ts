@@ -9,7 +9,13 @@ export type {
   RenderTextLayerOptions,
 } from "./types";
 export { PdfPageOutOfRangeError } from "./types";
-export { FALLBACK_PAGE_SIZE, loadPageSizes } from "./page-sizes";
+export {
+  FALLBACK_PAGE_SIZE,
+  loadPageSizes,
+  loadPageSizesProgressive,
+  type LoadPageSizesProgressiveOptions,
+  type ProgressivePageSizes,
+} from "./page-sizes";
 export { LruCache } from "./lru-cache";
 
 import type { PdfRenderer } from "./types";

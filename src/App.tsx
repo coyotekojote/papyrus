@@ -15,7 +15,7 @@ import {
 } from "./files/recent";
 import {
   loadDefaultRenderer,
-  loadPageSizes,
+  loadPageSizesProgressive,
   type PageSize,
   type PdfDocumentHandle,
 } from "./pdf";
@@ -52,6 +52,16 @@ function App() {
   const openDocumentRef = useRef<OpenDocument | null>(null);
   openDocumentRef.current = openDocument;
 
+  /**
+   * Aborts the background half of a progressive page-size load (issue #12):
+   * the part that keeps fetching after `openPath` has already handed back the
+   * first chunk. Set fresh for every `openPath` call, and aborted whenever
+   * that load's document stops being the one on screen — a new document
+   * opening on top of it, or the reader closing it — so a slow read from a
+   * huge PDF does not keep spending cycles once nobody is looking at it.
+   */
+  const pageSizeAbortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     setRecentFiles(loadRecentFiles(window.localStorage));
   }, []);
@@ -59,6 +69,7 @@ function App() {
   // Release the renderer's document (and its worker state) on teardown.
   useEffect(
     () => () => {
+      pageSizeAbortRef.current?.abort();
       void openDocumentRef.current?.doc.destroy();
     },
     [],
@@ -92,7 +103,37 @@ function App() {
         markEnd("app:read-file");
         const renderer = await loadDefaultRenderer();
         const doc = await renderer.open(bytes);
-        const pageSizes = await loadPageSizes(doc);
+
+        // A document opening on top of one still fetching its page sizes in
+        // the background must not let that stale load keep running.
+        pageSizeAbortRef.current?.abort();
+        const pageSizeAbort = new AbortController();
+        pageSizeAbortRef.current = pageSizeAbort;
+
+        const { initial: pageSizes, done: pageSizesDone } =
+          await loadPageSizesProgressive(doc, {
+            signal: pageSizeAbort.signal,
+            onProgress: (sizes) => {
+              // Guards against a progress callback landing after the reader
+              // has already moved on to a different document — the abort
+              // above stops new fetches, but one already in flight can still
+              // resolve and reach here before the signal is checked again.
+              setOpenDocument((current) =>
+                current?.doc === doc
+                  ? { ...current, pageSizes: sizes }
+                  : current,
+              );
+            },
+          });
+        // Loading the rest is not on openPath's critical path — the viewer
+        // lays out fine with FALLBACK_PAGE_SIZE for pages not read yet, and
+        // onProgress above is what carries the real sizes in as they arrive.
+        pageSizesDone.catch(() => {
+          // A failed background page size never reaches here (loadPageSizes*
+          // falls back to FALLBACK_PAGE_SIZE internally) — this only guards
+          // against the promise itself rejecting unexpectedly, so it cannot
+          // become an unhandled rejection.
+        });
 
         const previous = openDocumentRef.current;
         setOpenDocument({ doc, pageSizes, path, name: fileNameFromPath(path) });
@@ -139,6 +180,7 @@ function App() {
   );
 
   const handleClose = useCallback(() => {
+    pageSizeAbortRef.current?.abort();
     setOpenDocument((current) => {
       if (current) void current.doc.destroy();
       return null;
