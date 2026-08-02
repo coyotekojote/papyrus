@@ -885,3 +885,193 @@ body {
 .thumbnail--active {
   box-shadow: 0 0 0 2px var(--accent);
 }
+
+/* ---------- settings (issue #9) ---------- */
+
+.start__settings {
+  align-self: flex-end;
+  padding: 0.35rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.start__settings:hover {
+  border-color: var(--accent);
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem 1rem;
+  background: rgb(0 0 0 / 55%);
+}
+
+.modal__panel {
+  width: min(560px, 100%);
+  /* The dialog scrolls inside itself; the page behind it must not. */
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 1.25rem 1.5rem 1.75rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-raised);
+}
+
+.modal__panel:focus {
+  outline: none;
+}
+
+.modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.modal__close {
+  padding: 0.1rem 0.5rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.modal__close:hover {
+  color: var(--text);
+}
+
+.modal__error {
+  margin: 0.75rem 0 0;
+  color: #ff8080;
+  font-size: 0.85rem;
+}
+
+.settings__section {
+  margin-top: 1.5rem;
+}
+
+.settings__heading {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+
+.settings__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+
+.settings__label {
+  font-size: 0.9rem;
+}
+
+.settings__control {
+  min-width: 12rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.settings__control:disabled {
+  opacity: 0.6;
+}
+
+.settings__note {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.keys {
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.keys__item {
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.keys__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.keys__name {
+  font-size: 0.9rem;
+}
+
+.keys__status {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.keys__row {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.keys__input {
+  flex: 1 1 auto;
+  /* Without this the input refuses to shrink and the buttons overflow. */
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.keys__button {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.keys__button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.keys__button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.keys__button--danger:hover:not(:disabled) {
+  border-color: #ff8080;
+  color: #ff8080;
+}

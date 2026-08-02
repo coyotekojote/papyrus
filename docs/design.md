@@ -56,6 +56,18 @@ PDF と同じフォルダにサイドカーを置く。ユーザーが iCloud Dr
 - 座標は正規化（0〜1）で保持し、ズーム・デバイス非依存にする
 - 書き込みは atomic write（tmp に書いて rename）で iCloud 同期中の破損を防ぐ
 
+### アプリ設定（PDFに紐づかないもの）
+
+サイドカーは「その PDF のもの」だけを持つ。アプリ全体の設定は OS の config ディレクトリの
+`settings.json`（デフォルト綴じ方向・表示モード、翻訳プロバイダ、翻訳先言語）に置き、同じく
+atomic write する。手で編集できる素の JSON なので、読み込みはフィールド単位でデフォルトに
+フォールバックする。
+
+APIキーはここには書かない。OS のキーチェーン（macOS/iOS は Keychain Services、Windows は
+Credential Manager、Linux は Secret Service）に Rust 側が保存し、WebView には渡さない。
+フロントから呼べるのは「保存」「削除」「設定済みかどうか」の3つだけで、キーを読み出す
+コマンドは用意しない。
+
 ## アーキテクチャ
 
 ```mermaid

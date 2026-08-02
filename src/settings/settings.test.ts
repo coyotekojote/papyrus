@@ -1,0 +1,110 @@
+import { invoke } from "@tauri-apps/api/core";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  defaultSettings,
+  loadSettings,
+  normalizeSettings,
+  saveSettings,
+  SETTINGS_VERSION,
+  type Settings,
+} from "./settings";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+const stored: Settings = {
+  version: SETTINGS_VERSION,
+  defaultBinding: "right",
+  defaultViewMode: "spread",
+  translation: { provider: "deepl", targetLanguage: "en" },
+};
+
+beforeEach(() => {
+  vi.mocked(invoke).mockReset();
+});
+
+describe("normalizeSettings", () => {
+  it("keeps every value the backend knows", () => {
+    expect(normalizeSettings(stored)).toEqual(stored);
+  });
+
+  it("falls back to the defaults for anything that is not settings", () => {
+    for (const value of [null, undefined, "settings", 42, []]) {
+      expect(normalizeSettings(value)).toEqual(defaultSettings());
+    }
+  });
+
+  it("replaces only the field it cannot read", () => {
+    const settings = normalizeSettings({
+      defaultBinding: "sideways",
+      defaultViewMode: "spread",
+      translation: { provider: "gemini", targetLanguage: "ko" },
+    });
+
+    expect(settings.defaultBinding).toBe("left");
+    expect(settings.defaultViewMode).toBe("spread");
+    expect(settings.translation.provider).toBe("claude");
+    expect(settings.translation.targetLanguage).toBe("ko");
+  });
+
+  it("trims a language tag and rejects a blank one", () => {
+    expect(
+      normalizeSettings({ translation: { targetLanguage: "  fr  " } })
+        .translation.targetLanguage,
+    ).toBe("fr");
+    expect(
+      normalizeSettings({ translation: { targetLanguage: "   " } }).translation
+        .targetLanguage,
+    ).toBe("ja");
+  });
+
+  it("reports this build's version whatever the file said", () => {
+    expect(normalizeSettings({ ...stored, version: 99 }).version).toBe(
+      SETTINGS_VERSION,
+    );
+  });
+});
+
+describe("loadSettings", () => {
+  it("normalizes what the backend returns", async () => {
+    vi.mocked(invoke).mockResolvedValue({ ...stored, defaultBinding: "up" });
+
+    await expect(loadSettings()).resolves.toEqual({
+      ...stored,
+      defaultBinding: "left",
+    });
+    expect(invoke).toHaveBeenCalledWith("load_settings", undefined);
+  });
+
+  it("turns a backend failure into a readable message", async () => {
+    vi.mocked(invoke).mockRejectedValue({
+      kind: "io",
+      message: "permission denied",
+    });
+
+    await expect(loadSettings()).rejects.toThrow(
+      "設定を保存できませんでした: permission denied",
+    );
+  });
+});
+
+describe("saveSettings", () => {
+  it("sends the settings and resolves to what was actually stored", async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      ...stored,
+      translation: { ...stored.translation, targetLanguage: "en" },
+    });
+
+    const result = await saveSettings({
+      ...stored,
+      translation: { ...stored.translation, targetLanguage: "  en  " },
+    });
+
+    expect(invoke).toHaveBeenCalledWith("save_settings", {
+      settings: {
+        ...stored,
+        translation: { ...stored.translation, targetLanguage: "  en  " },
+      },
+    });
+    expect(result.translation.targetLanguage).toBe("en");
+  });
+});

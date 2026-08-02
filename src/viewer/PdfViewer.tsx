@@ -90,7 +90,14 @@ export interface PdfViewerProps {
   /** Path of the PDF on disk; annotations live in its sidecar folder. */
   filePath: string;
   fileName: string;
+  /**
+   * What this document opens as, from the app settings (issue #9). Only the
+   * starting point: both stay switchable from the toolbar, for this document.
+   */
+  defaultBinding?: Binding;
+  defaultViewMode?: ViewMode;
   onClose: () => void;
+  onOpenSettings?: () => void;
 }
 
 type Popup =
@@ -159,10 +166,15 @@ export function PdfViewer({
   pageSizes,
   filePath,
   fileName,
+  defaultBinding = "left",
+  defaultViewMode = "single",
   onClose,
+  onOpenSettings,
 }: PdfViewerProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>("single");
-  const [binding, setBinding] = useState<Binding>("left");
+  // Read once, when the document opens: changing the default later is about
+  // the next document, not the one being read.
+  const [viewMode, setViewMode] = useState<ViewMode>(defaultViewMode);
+  const [binding, setBinding] = useState<Binding>(defaultBinding);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
   const [currentPage, setCurrentPage] = useState(1);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -920,6 +932,16 @@ export function PdfViewer({
             +
           </button>
         </div>
+
+        {onOpenSettings ? (
+          <button
+            type="button"
+            className="toolbar__button"
+            onClick={onOpenSettings}
+          >
+            設定
+          </button>
+        ) : null}
       </header>
 
       <div className="viewer__body" ref={bodyRef}>

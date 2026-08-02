@@ -20,6 +20,7 @@ import {
 import { SAVE_DEBOUNCE_MS } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { PdfViewer } from "./PdfViewer";
+import type { Binding, ViewMode } from "./spreads";
 
 vi.mock("../files/sidecar", async (importActual) => {
   const actual = await importActual<typeof import("../files/sidecar")>();
@@ -154,19 +155,28 @@ async function flushScroll() {
   });
 }
 
-function renderViewer(pageCount = PAGE_COUNT, outline: OutlineNode[] = []) {
+function renderViewer(
+  pageCount = PAGE_COUNT,
+  outline: OutlineNode[] = [],
+  /** App settings this document opens with (issue #9). */
+  defaults: { binding?: Binding; viewMode?: ViewMode } = {},
+) {
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
+  const onOpenSettings = vi.fn();
   render(
     <PdfViewer
       doc={doc}
       pageSizes={pageSizes(pageCount)}
       filePath="/papers/paper.pdf"
       fileName="paper.pdf"
+      defaultBinding={defaults.binding}
+      defaultViewMode={defaults.viewMode}
       onClose={onClose}
+      onOpenSettings={onOpenSettings}
     />,
   );
-  return { doc, onClose, user: userEvent.setup() };
+  return { doc, onClose, onOpenSettings, user: userEvent.setup() };
 }
 
 describe("PdfViewer", () => {
@@ -240,6 +250,23 @@ describe("PdfViewer", () => {
 
     const [rightFirst, rightSecond] = firstRenderedPair();
     expect(rightFirst).toBeGreaterThan(rightSecond);
+  });
+
+  it("opens with the binding and view mode from the settings", () => {
+    renderViewer(PAGE_COUNT, [], { binding: "right", viewMode: "spread" });
+
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "見開き" })).toBeInTheDocument();
+    const [first, second] = firstRenderedPair();
+    expect(first).toBeGreaterThan(second);
+  });
+
+  it("opens the settings from the toolbar", async () => {
+    const { onOpenSettings, user } = renderViewer();
+
+    await user.click(screen.getByRole("button", { name: "設定" }));
+
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   it("zooms with the toolbar and resets to 100%", async () => {

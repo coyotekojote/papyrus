@@ -7,6 +7,7 @@ export interface StartScreenProps {
   onOpen: () => void;
   onOpenRecent: (path: string) => void;
   onRemoveRecent: (path: string) => void;
+  onOpenSettings: () => void;
 }
 
 const formatOpenedAt = (openedAt: number) =>
@@ -25,9 +26,17 @@ export function StartScreen({
   onOpen,
   onOpenRecent,
   onRemoveRecent,
+  onOpenSettings,
 }: StartScreenProps) {
   return (
     <main className="start">
+      <button
+        type="button"
+        className="start__settings"
+        onClick={onOpenSettings}
+      >
+        設定
+      </button>
       <h1 className="start__title">Papyrus</h1>
       <p className="start__tagline">PDF viewer, built with Tauri + React.</p>
 

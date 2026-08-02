@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -7,16 +7,31 @@ import {
   parseRecentFiles,
   type RecentFile,
 } from "./files/recent";
+import { defaultSettings } from "./settings/settings";
 
 const openDialog = vi.hoisted(() => vi.fn());
 const exists = vi.hoisted(() => vi.fn());
 const readFile = vi.hoisted(() => vi.fn());
+const invoke = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openDialog }));
 vi.mock("@tauri-apps/plugin-fs", () => ({ exists, readFile }));
+// The settings (issue #9) are read at startup, over the same IPC as everything
+// else the backend owns.
+vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 function seedRecentFiles(files: RecentFile[]) {
   window.localStorage.setItem(RECENT_FILES_STORAGE_KEY, JSON.stringify(files));
+}
+
+/**
+ * Renders the app and lets the settings read at startup settle, so no state
+ * update lands after the test has finished.
+ */
+async function renderApp() {
+  await act(async () => {
+    render(<App />);
+  });
 }
 
 function storedRecentFiles(): RecentFile[] {
@@ -29,10 +44,15 @@ describe("App start screen", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.clearAllMocks();
+    invoke.mockImplementation((command: string) =>
+      command === "api_key_status"
+        ? Promise.resolve([])
+        : Promise.resolve(defaultSettings()),
+    );
   });
 
-  it("renders the Papyrus heading and tagline", () => {
-    render(<App />);
+  it("renders the Papyrus heading and tagline", async () => {
+    await renderApp();
 
     expect(
       screen.getByRole("heading", { level: 1, name: "Papyrus" }),
@@ -42,19 +62,19 @@ describe("App start screen", () => {
     ).toBeInTheDocument();
   });
 
-  it("says the recent list is empty when nothing has been opened", () => {
-    render(<App />);
+  it("says the recent list is empty when nothing has been opened", async () => {
+    await renderApp();
 
     expect(screen.getByText("まだありません。")).toBeInTheDocument();
   });
 
-  it("lists the recent files stored from a previous session", () => {
+  it("lists the recent files stored from a previous session", async () => {
     seedRecentFiles([
       { path: "/Papers/attention.pdf", name: "attention.pdf", openedAt: 1 },
       { path: "/Papers/bert.pdf", name: "bert.pdf", openedAt: 2 },
     ]);
 
-    render(<App />);
+    await renderApp();
 
     expect(screen.getByText("attention.pdf")).toBeInTheDocument();
     expect(screen.getByText("bert.pdf")).toBeInTheDocument();
@@ -67,7 +87,7 @@ describe("App start screen", () => {
       { path: "/Papers/bert.pdf", name: "bert.pdf", openedAt: 2 },
     ]);
 
-    render(<App />);
+    await renderApp();
     await user.click(
       screen.getByRole("button", { name: "attention.pdf を一覧から削除" }),
     );
@@ -82,7 +102,7 @@ describe("App start screen", () => {
     const user = userEvent.setup();
     openDialog.mockResolvedValue(null);
 
-    render(<App />);
+    await renderApp();
     await user.click(screen.getByRole("button", { name: "PDFを開く" }));
 
     expect(readFile).not.toHaveBeenCalled();
@@ -96,7 +116,7 @@ describe("App start screen", () => {
     ]);
     exists.mockResolvedValue(false);
 
-    render(<App />);
+    await renderApp();
     await user.click(screen.getByRole("button", { name: "gone.pdf を開く" }));
 
     await waitFor(() => {
@@ -106,5 +126,18 @@ describe("App start screen", () => {
     });
     expect(readFile).not.toHaveBeenCalled();
     expect(storedRecentFiles()).toEqual([]);
+  });
+
+  it("opens the settings from the start screen and closes them again", async () => {
+    const user = userEvent.setup();
+
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "設定" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "設定" });
+    expect(invoke).toHaveBeenCalledWith("load_settings", undefined);
+
+    await user.click(screen.getByRole("button", { name: "設定を閉じる" }));
+    expect(dialog).not.toBeInTheDocument();
   });
 });
