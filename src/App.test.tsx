@@ -7,6 +7,7 @@ import {
   parseRecentFiles,
   type RecentFile,
 } from "./files/recent";
+import { LIBRARY_VIEW_MODE_STORAGE_KEY } from "./library/library";
 import type { PdfDocumentHandle, PdfRenderer } from "./pdf";
 import { defaultSettings } from "./settings/settings";
 
@@ -53,11 +54,13 @@ vi.mock("./viewer/PdfViewer", () => ({
 /**
  * A `PdfDocumentHandle` whose `getPageSize` calls are all observable, for
  * asserting on progressive-open behaviour (issue #12). Pages past
- * `delayAfter` resolve on a macrotask instead of immediately, so the
- * background continuation is still observably in flight right after the
- * viewer first appears — real page reads take nonzero time; this fake's
- * default (everything resolving on the same microtask) would otherwise let
- * the whole 40-page document finish before the test gets to look.
+ * `delayAfter` do not resolve until the returned `release()` is called, so
+ * the background continuation is observably stuck in flight for as long as
+ * the test wants — a `setTimeout`-based delay raced the same interval
+ * against the test's own `await`s (`user.click`, `waitFor`) and was flaky on
+ * a slow/loaded CI runner: on a machine where those awaits alone take longer
+ * than the delay, the timer fires before the test ever gets to look at the
+ * intermediate state. A gate makes it wait exactly as long as told to.
  */
 function fakePdfDocument(
   pageCount: number,
@@ -65,18 +68,26 @@ function fakePdfDocument(
 ): {
   doc: PdfDocumentHandle;
   getPageSizeCalls: number[];
+  /** Resolves every gated `getPageSize` call so far, and every later one
+   * too — once released, the gate stays open. */
+  release: () => void;
 } {
   const getPageSizeCalls: number[] = [];
+  const size = { width: 600, height: 800 };
+  let released = false;
+  const pendingResolvers: Array<() => void> = [];
+  const release = () => {
+    released = true;
+    while (pendingResolvers.length > 0) pendingResolvers.shift()?.();
+  };
   const doc: PdfDocumentHandle = {
     pageCount,
     getPageSize: vi.fn((pageNumber: number) => {
       getPageSizeCalls.push(pageNumber);
-      const size = { width: 600, height: 800 };
-      return pageNumber > delayAfter
-        ? new Promise<typeof size>((resolve) =>
-            setTimeout(() => resolve(size), 5),
-          )
-        : Promise.resolve(size);
+      if (pageNumber <= delayAfter || released) return Promise.resolve(size);
+      return new Promise<typeof size>((resolve) => {
+        pendingResolvers.push(() => resolve(size));
+      });
     }),
     renderPage: vi.fn(async () => {}),
     renderRegion: vi.fn(async () => new Blob()),
@@ -84,7 +95,7 @@ function fakePdfDocument(
     getOutline: vi.fn(async () => []),
     destroy: vi.fn(async () => {}),
   };
-  return { doc, getPageSizeCalls };
+  return { doc, getPageSizeCalls, release };
 }
 
 function seedRecentFiles(files: RecentFile[]) {
@@ -119,6 +130,15 @@ describe("App start screen", () => {
   });
 
   describe("opening a document (issue #12 progressive page sizes)", () => {
+    beforeEach(() => {
+      // The default grid view paints a cover for every recent file (see
+      // library/PdfCover.tsx), which opens its own document through this
+      // same mocked renderer and calls `getPageSize(1)` on it — polluting
+      // `getPageSizeCalls` below at a point in the microtask ordering these
+      // tests do not control. The list view has no covers, so it never does.
+      window.localStorage.setItem(LIBRARY_VIEW_MODE_STORAGE_KEY, "list");
+    });
+
     it("shows the viewer once the first chunk of page sizes is ready, and keeps reading the rest in the background", async () => {
       const user = userEvent.setup();
       seedRecentFiles([
@@ -126,7 +146,9 @@ describe("App start screen", () => {
       ]);
       exists.mockResolvedValue(true);
       readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
-      const { doc, getPageSizeCalls } = fakePdfDocument(40, { delayAfter: 32 });
+      const { doc, getPageSizeCalls, release } = fakePdfDocument(40, {
+        delayAfter: 32,
+      });
       const renderer: PdfRenderer = {
         id: "fake",
         open: vi.fn(async () => doc),
@@ -140,10 +162,16 @@ describe("App start screen", () => {
 
       // openPath only awaits the first chunk (32 pages): the viewer must be
       // showing — with exactly those 32 sizes — before the other 8 pages
-      // (delayed on purpose) have reported back.
+      // (gated behind `release()`, so this never resolves on its own) have
+      // reported back.
       await waitFor(() => {
         expect(screen.getByText("page-sizes-count:32")).toBeInTheDocument();
       });
+
+      // Only now let the background continuation's gated pages resolve —
+      // the intermediate state above has already been observed, so there is
+      // nothing left to race.
+      release();
 
       // The background continuation keeps going after the viewer is already
       // up, reaching every page without the reader waiting on it.
@@ -160,11 +188,14 @@ describe("App start screen", () => {
       ]);
       exists.mockResolvedValue(true);
       readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
-      // Every page (including the first chunk) resolves on a real timer, so
-      // the chunk already kicked off in the background when the reader
-      // closes the document is still genuinely in flight — not finished and
-      // not yet even started on the chunk after it.
-      const { doc, getPageSizeCalls } = fakePdfDocument(200);
+      // The first chunk (pages 1-32) resolves immediately; every page past
+      // it is gated behind `release()`. The chunk already kicked off in the
+      // background by the time the first chunk resolves is genuinely stuck
+      // in flight — not finished, and this test controls exactly when (if
+      // ever) it does — rather than racing a real timer against the abort.
+      const { doc, getPageSizeCalls, release } = fakePdfDocument(200, {
+        delayAfter: 32,
+      });
       const renderer: PdfRenderer = {
         id: "fake",
         open: vi.fn(async () => doc),
@@ -178,17 +209,32 @@ describe("App start screen", () => {
       await waitFor(() => {
         expect(screen.getByText("page-sizes-count:32")).toBeInTheDocument();
       });
+      const countBeforeClose = getPageSizeCalls.length;
+      // The next chunk (33-64) is already in flight at this point — invoked
+      // eagerly as part of the same continuation that resolved the first
+      // chunk — but gated, so it cannot have completed yet.
+      expect(countBeforeClose).toBeGreaterThan(32);
+      expect(countBeforeClose).toBeLessThan(200);
 
       await act(async () => {
         await user.click(screen.getByRole("button", { name: "← ライブラリ" }));
       });
-      const countRightAfterClose = getPageSizeCalls.length;
-      expect(countRightAfterClose).toBeLessThan(200);
+      // Closing must not itself trigger more page-size fetches.
+      expect(getPageSizeCalls.length).toBe(countBeforeClose);
 
-      // Give the in-flight chunk's timers time to fire, then confirm the
-      // abort kept the background loop from starting a further chunk.
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(getPageSizeCalls).toHaveLength(countRightAfterClose);
+      // Only now release the in-flight chunk — after the abort. If the
+      // background loop's own abort check did not exist (or were buggy), it
+      // would proceed to fetch the chunk after this one once this one
+      // resolves; this is what proves it does not.
+      await act(async () => {
+        release();
+        // Let the now-resolved chunk's `.then` continuation, and the loop's
+        // subsequent abort check, run.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(getPageSizeCalls.length).toBe(countBeforeClose);
     });
   });
 
