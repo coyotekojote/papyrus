@@ -474,6 +474,38 @@ describe("PdfViewer", () => {
       });
     });
 
+    it("discards a prefetched canvas instead of caching it when it alone exceeds the pixel budget", async () => {
+      const { doc } = renderViewer(200);
+      // Simulate an oversized render (the extreme-zoom scenario this guards
+      // against): every canvas handed to `renderPage` comes back far bigger
+      // than the cache's entire default pixel budget on its own.
+      vi.mocked(doc.renderPage).mockImplementation(
+        async (_pageNumber, options) => {
+          options.canvas.width = 20_000;
+          options.canvas.height = 20_000; // 400,000,000px
+        },
+      );
+
+      await scrollTo(3000);
+      vi.mocked(doc.renderPage).mockClear();
+      await scrollTo(9000);
+
+      await waitFor(() => {
+        const rendered = new Set(renderedPages());
+        const prefetchCall = vi
+          .mocked(doc.renderPage)
+          .mock.calls.find((call) => !rendered.has(call[0]));
+        expect(prefetchCall).toBeDefined();
+        // Discarded, not cached: the prefetch path must not lean on
+        // PageRenderCache.set's "keep the one entry that alone exceeds the
+        // budget" rule — that rule assumes the entry is the page on screen,
+        // which an offscreen prefetch is not. Zeroing it here is the same
+        // release the cache's own eviction uses for a canvas nobody needs.
+        expect(prefetchCall?.[1].canvas.width).toBe(0);
+        expect(prefetchCall?.[1].canvas.height).toBe(0);
+      });
+    });
+
     it("cancels a pending prefetch when the component unmounts", async () => {
       const { doc, unmount } = renderViewer(200);
       await scrollTo(3000);

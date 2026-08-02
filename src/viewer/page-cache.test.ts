@@ -132,6 +132,32 @@ describe("PageRenderCache", () => {
     });
   });
 
+  describe("fitsBudget", () => {
+    it("is true for a pixel count at or under the budget", () => {
+      const cache = new PageRenderCache(10, 200);
+
+      expect(cache.fitsBudget(199)).toBe(true);
+      expect(cache.fitsBudget(200)).toBe(true);
+    });
+
+    it("is false for a pixel count over the budget", () => {
+      const cache = new PageRenderCache(10, 200);
+
+      expect(cache.fitsBudget(201)).toBe(false);
+    });
+
+    it("has no side effects — it never evicts or changes the running total", () => {
+      const cache = new PageRenderCache(10, 200);
+      cache.set(1, 1, canvas(10, 10)); // 100px
+
+      expect(cache.fitsBudget(1_000_000)).toBe(false);
+
+      expect(cache.pixels).toBe(100);
+      expect(cache.size).toBe(1);
+      expect(cache.has(1, 1)).toBe(true);
+    });
+  });
+
   describe("pixel budget", () => {
     it("rejects a non-positive pixel budget", () => {
       expect(() => new PageRenderCache(12, 0)).toThrow(RangeError);

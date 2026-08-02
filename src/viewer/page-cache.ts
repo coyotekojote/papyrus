@@ -102,6 +102,23 @@ export class PageRenderCache {
     return entry !== undefined && entry.scale === scale;
   }
 
+  /**
+   * Whether a canvas of `pixels` could ever be `set` without immediately
+   * evicting every other entry to make room for it. `set` itself has no such
+   * guard — it always keeps whatever it was just given, even alone over
+   * budget, on the assumption that the one entry it cannot evict is the page
+   * on screen right now (see the comment in `set` below). That assumption
+   * only holds for `PageCanvas`'s own synchronous render; a caller adding
+   * entries the reader is not necessarily looking at (the prefetch in
+   * `PdfViewer`, warming an offscreen canvas) must check this *before*
+   * calling `set`, and skip the cache entirely for a canvas that fails it —
+   * see `docs/performance.md` for why a prefetch is never worth evicting
+   * pages actually on screen to make room for.
+   */
+  fitsBudget(pixels: number): boolean {
+    return pixels <= this.pixelBudget;
+  }
+
   set(pageNumber: number, scale: number, canvas: HTMLCanvasElement): void {
     const pixels = canvas.width * canvas.height;
     // `LruCache.set` fires `onEvict` (above) for both an overwritten entry at
@@ -112,7 +129,9 @@ export class PageRenderCache {
 
     // A single page larger than the whole budget must still be kept — it is
     // the one on screen right now — so eviction stops at one entry left
-    // rather than trying to reach the budget no matter what.
+    // rather than trying to reach the budget no matter what. Callers that
+    // cannot make that assumption (the prefetch) are expected to have
+    // already checked `fitsBudget` and skipped `set` entirely.
     while (this.totalPixels > this.pixelBudget && this.cache.size > 1) {
       const oldest = this.cache.keys()[0];
       if (oldest === undefined) break;

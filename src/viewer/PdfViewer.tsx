@@ -470,7 +470,24 @@ export function PdfViewer({
           signal: controller.signal,
         })
         .then(() => {
-          if (!controller.signal.aborted) cache.set(pageNumber, zoom, canvas);
+          if (controller.signal.aborted) return;
+          // A prefetch warms an offscreen canvas nobody is necessarily
+          // looking at — unlike `PageCanvas`'s own render, it must not lean
+          // on `cache.set`'s "keep the one entry that alone exceeds the
+          // budget" rule, which assumes that entry is the page on screen
+          // right now. At extreme zoom (zoom 6 × DPR 2, an A4 page is
+          // ~70,000,000px — already over the 64,000,000px default budget on
+          // its own) a prefetched page could otherwise evict every page
+          // actually visible and then sit there itself, uselessly, as the
+          // cache's only entry. Skipping the cache here just means this
+          // page renders again if the reader actually scrolls to it — no
+          // worse than never having prefetched it.
+          if (cache.fitsBudget(canvas.width * canvas.height)) {
+            cache.set(pageNumber, zoom, canvas);
+          } else {
+            canvas.width = 0;
+            canvas.height = 0;
+          }
         })
         .catch(() => {
           // A prefetch that fails just stays cold; the reader's own render,
