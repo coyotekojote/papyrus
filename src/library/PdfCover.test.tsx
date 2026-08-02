@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PdfCover } from "./PdfCover";
 
 const readPdfFile = vi.hoisted(() => vi.fn());
@@ -28,6 +28,10 @@ beforeEach(() => {
   );
 });
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("PdfCover", () => {
   it("renders the first page as an image once the render resolves", async () => {
     readPdfFile.mockResolvedValue(new Uint8Array([1]));
@@ -51,10 +55,13 @@ describe("PdfCover", () => {
 
     render(<PdfCover path="/a/report-missing.pdf" name="report.pdf" />);
 
+    // Waited on the placeholder rather than on the image being absent: the
+    // image is absent on the first render too, so that would pass before the
+    // read has even been attempted.
     await waitFor(() => {
-      expect(document.querySelector("img.cover__image")).toBeNull();
+      expect(screen.getByText("R")).toBeInTheDocument();
     });
-    expect(screen.getByText("R")).toBeInTheDocument();
+    expect(document.querySelector("img.cover__image")).toBeNull();
   });
 
   it("destroys the document even when rendering the page fails", async () => {
@@ -69,5 +76,32 @@ describe("PdfCover", () => {
     await waitFor(() => {
       expect(doc.destroy).toHaveBeenCalled();
     });
+  });
+
+  it("opens one document at a time when several covers mount together", async () => {
+    const reads: string[] = [];
+    let releaseFirstRead = () => {};
+    const firstRead = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    readPdfFile.mockImplementation(async (path: string) => {
+      reads.push(path);
+      if (reads.length === 1) await firstRead;
+      return new Uint8Array([1]);
+    });
+    loadDefaultRenderer.mockResolvedValue({ open: async () => fakeDoc() });
+
+    render(
+      <>
+        <PdfCover path="/a/queued-one.pdf" name="one.pdf" />
+        <PdfCover path="/a/queued-two.pdf" name="two.pdf" />
+      </>,
+    );
+
+    await waitFor(() => expect(reads).toEqual(["/a/queued-one.pdf"]));
+    releaseFirstRead();
+    await waitFor(() =>
+      expect(reads).toEqual(["/a/queued-one.pdf", "/a/queued-two.pdf"]),
+    );
   });
 });

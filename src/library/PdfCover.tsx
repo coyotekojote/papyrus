@@ -13,6 +13,32 @@ const COVER_WIDTH = 160;
  */
 const coverCache = new Map<string, string>();
 
+/**
+ * Covers are rendered one at a time. Each one opens a document of its own, and
+ * pdf.js puts up a worker per document (`PDFWorker.create` runs per loading
+ * task), so painting a whole library at once would run as many workers as
+ * there are tiles.
+ */
+let coverQueue: Promise<void> = Promise.resolve();
+
+/** Renders a document's first page and resolves to it as a data URL. */
+async function renderCover(path: string): Promise<string> {
+  const bytes = await readPdfFile(path);
+  const renderer = await loadDefaultRenderer();
+  const doc = await renderer.open(bytes);
+  try {
+    const size = await doc.getPageSize(1);
+    const scale = size.width > 0 ? COVER_WIDTH / size.width : 1;
+    const canvas = document.createElement("canvas");
+    await doc.renderPage(1, { scale, canvas });
+    return canvas.toDataURL("image/png");
+  } finally {
+    // Nobody waits on the teardown, but a rejection with no handler would
+    // still surface as an unhandled one.
+    doc.destroy().catch(() => {});
+  }
+}
+
 interface PdfCoverProps {
   path: string;
   name: string;
@@ -45,24 +71,18 @@ export function PdfCover({ path, name }: PdfCoverProps) {
     let cancelled = false;
     setState({ status: "loading" });
 
-    void (async () => {
-      const bytes = await readPdfFile(path);
-      const renderer = await loadDefaultRenderer();
-      const doc = await renderer.open(bytes);
+    // Queued rather than started here, so a library's worth of tiles opens one
+    // document at a time. A tile that goes away before its turn — filtered out
+    // by the search box, or switched to the list view — never opens one at all.
+    coverQueue = coverQueue.then(async () => {
+      if (cancelled) return;
       try {
-        const size = await doc.getPageSize(1);
-        const scale = size.width > 0 ? COVER_WIDTH / size.width : 1;
-        const canvas = document.createElement("canvas");
-        await doc.renderPage(1, { scale, canvas });
-        if (cancelled) return;
-        const src = canvas.toDataURL("image/png");
+        const src = await renderCover(path);
         coverCache.set(path, src);
-        setState({ status: "ready", src });
-      } finally {
-        void doc.destroy();
+        if (!cancelled) setState({ status: "ready", src });
+      } catch {
+        if (!cancelled) setState({ status: "failed" });
       }
-    })().catch(() => {
-      if (!cancelled) setState({ status: "failed" });
     });
 
     return () => {
