@@ -177,6 +177,37 @@ describe("parseRecentFiles", () => {
 
     expect(parseRecentFiles(raw)).toHaveLength(MAX_RECENT_FILES);
   });
+
+  it("keeps a string bookmark alongside an entry", () => {
+    const raw = JSON.stringify([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5, bookmark: "Ym9va21hcms=" },
+    ]);
+
+    expect(parseRecentFiles(raw)).toEqual([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5, bookmark: "Ym9va21hcms=" },
+    ]);
+  });
+
+  it("keeps an entry with no bookmark field, for pre-#11 storage", () => {
+    const raw = JSON.stringify([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5 },
+    ]);
+
+    const parsed = parseRecentFiles(raw);
+    expect(parsed).toEqual([{ path: "/a.pdf", name: "a.pdf", openedAt: 5 }]);
+    expect(parsed[0].bookmark).toBeUndefined();
+  });
+
+  it("drops a non-string bookmark but keeps the rest of the entry", () => {
+    const raw = JSON.stringify([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5, bookmark: 12345 },
+      { path: "/b.pdf", name: "b.pdf", openedAt: 4, bookmark: null },
+    ]);
+
+    const parsed = parseRecentFiles(raw);
+    expect(parsed.map((f) => f.path)).toEqual(["/a.pdf", "/b.pdf"]);
+    expect(parsed.every((f) => f.bookmark === undefined)).toBe(true);
+  });
 });
 
 describe("loadRecentFiles / saveRecentFiles", () => {

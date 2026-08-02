@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PdfFileMissingError, pickPdfFile, readPdfFile } from "./files/open";
+import {
+  createBookmarkFor,
+  PdfFileMissingError,
+  pickPdfFile,
+  readPdfFileWithBookmark,
+} from "./files/open";
 import {
   addRecentFile,
   fileNameFromPath,
@@ -69,12 +74,19 @@ function App() {
     [],
   );
 
+  /**
+   * `bookmark` is the security-scoped bookmark for `path`, when one exists
+   * (issue #11): passed in fresh from `createBookmarkFor` for a newly picked
+   * file, or carried over from the recent-files entry for a reopen. Either
+   * way it is what lets the file still be readable after an iOS relaunch, and
+   * is written back into the recent-files entry so it survives the next one.
+   */
   const openPath = useCallback(
-    async (path: string) => {
+    async (path: string, bookmark?: string) => {
       setBusy(true);
       setError(null);
       try {
-        const bytes = await readPdfFile(path);
+        const bytes = await readPdfFileWithBookmark(path, bookmark);
         const renderer = await loadDefaultRenderer();
         const doc = await renderer.open(bytes);
         const pageSizes = await loadPageSizes(doc);
@@ -88,6 +100,7 @@ function App() {
             path,
             name: fileNameFromPath(path),
             openedAt: Date.now(),
+            ...(bookmark ? { bookmark } : {}),
           }),
         );
       } catch (cause) {
@@ -106,11 +119,21 @@ function App() {
   const handleOpen = useCallback(async () => {
     try {
       const path = await pickPdfFile();
-      if (path) await openPath(path);
+      if (!path) return;
+      const bookmark = await createBookmarkFor(path);
+      await openPath(path, bookmark ?? undefined);
     } catch (cause) {
       setError(describeError(cause));
     }
   }, [openPath]);
+
+  const handleOpenRecent = useCallback(
+    (path: string) => {
+      const bookmark = recentFiles.find((file) => file.path === path)?.bookmark;
+      void openPath(path, bookmark);
+    },
+    [openPath, recentFiles],
+  );
 
   const handleClose = useCallback(() => {
     setOpenDocument((current) => {
@@ -164,7 +187,7 @@ function App() {
         busy={busy}
         error={error}
         onOpen={() => void handleOpen()}
-        onOpenRecent={(path) => void openPath(path)}
+        onOpenRecent={handleOpenRecent}
         onRemoveRecent={handleRemoveRecent}
         onOpenSettings={openSettings}
       />
