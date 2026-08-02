@@ -123,10 +123,12 @@ describe("RenderQueue", () => {
 
   it("propagates an abort of a running task's signal into the signal passed to run", async () => {
     const queue = new RenderQueue();
-    let seenSignal: AbortSignal | null = null;
     const gate = deferred();
     const run = vi.fn(async (signal: AbortSignal) => {
-      seenSignal = signal;
+      // Read via `run.mock.calls` below, once `controller.abort()` has run —
+      // referencing it here too keeps both eslint and tsc satisfied that the
+      // parameter is used.
+      void signal;
       await gate.promise;
     });
     const controller = new AbortController();
@@ -136,7 +138,8 @@ describe("RenderQueue", () => {
     expect(run).toHaveBeenCalledTimes(1);
 
     controller.abort();
-    expect(seenSignal?.aborted).toBe(true);
+    const [signal] = run.mock.calls[0];
+    expect(signal.aborted).toBe(true);
 
     gate.resolve();
     await scheduled;
