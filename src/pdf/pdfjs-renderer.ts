@@ -19,7 +19,7 @@ import workerUrl from "./pdf-worker?worker&url";
 
 import { backingStoreRatio } from "./canvas-scale";
 import { resolveOutline } from "./outline-resolve";
-import { markEnd, markStart } from "../perf/marks";
+import { clearStart, markEnd, markStart } from "../perf/marks";
 import { LruCache } from "./lru-cache";
 import { clampRegion } from "./region";
 import {
@@ -152,7 +152,18 @@ class PdfJsDocument implements PdfDocumentHandle {
     if (isFirstRender) markStart("pdfjs:first-render-page");
 
     const page = await this.page(pageNumber);
-    if (signal?.aborted || this.destroyed) return;
+    if (signal?.aborted || this.destroyed) {
+      // Abandoned before it ever reached pdf.js's own render call — a
+      // document switch racing the first page is not unusual. Without this,
+      // the start mark above would sit unmeasured forever (`firstRenderMarked`
+      // already latched) and no later call would get a chance to time the
+      // page the reader actually first sees rendered.
+      if (isFirstRender) {
+        clearStart("pdfjs:first-render-page");
+        this.firstRenderMarked = false;
+      }
+      return;
+    }
 
     const cssViewport = page.getViewport({ scale });
     // May be < 1 for very large pages or extreme zoom: the backing store is

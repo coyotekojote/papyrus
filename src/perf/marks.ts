@@ -2,11 +2,11 @@
  * Thin wrapper around `performance.mark`/`measure` for the hot paths tracked
  * by Issue #12 (file read, renderer open, page sizes, first page render).
  *
- * `performance.mark` itself is cheap enough to leave in production builds —
- * what is guarded is the console noise: a reader's machine has no dev tools
- * open to read it, and even the marks themselves are pointless to keep once
- * nothing consumes them, so `markEnd` skips both the measure and the log
- * outside dev.
+ * Both `markStart` and `markEnd` are dev-only no-ops in production: a
+ * reader's machine has no dev tools open to read the console log, and a mark
+ * nothing ever measures is pointless to keep. That matters for `markStart`
+ * in particular — production skipping it is what keeps a start mark from
+ * piling up forever on a document the reader keeps open for hours.
  */
 
 /** Suffix distinguishing this module's start marks from any others on the timeline. */
@@ -16,10 +16,21 @@ function hasPerformance(): boolean {
   return typeof performance !== "undefined";
 }
 
-/** Starts timing `name`. Pair with {@link markEnd}. Safe to call anywhere the
- * Performance API is unavailable (e.g. very old WebViews) — it is then a no-op. */
-export function markStart(name: string): void {
-  if (!hasPerformance()) return;
+/**
+ * Starts timing `name`. Pair with {@link markEnd} — or, if the measurement
+ * turns out to be abandoned partway (the operation aborted, say), with
+ * {@link clearStart} so the mark does not linger unmeasured. Safe to call
+ * anywhere the Performance API is unavailable (e.g. very old WebViews) — it
+ * is then a no-op, same as outside dev.
+ *
+ * `isDev` defaults to the build's dev flag but takes an explicit override so
+ * this stays unit-testable without faking Vite's env injection.
+ */
+export function markStart(
+  name: string,
+  isDev: boolean = import.meta.env.DEV,
+): void {
+  if (!hasPerformance() || !isDev) return;
   performance.mark(`${name}${START_SUFFIX}`);
 }
 
@@ -50,4 +61,21 @@ export function markEnd(
     performance.clearMarks(startMark);
     performance.clearMeasures(name);
   }
+}
+
+/**
+ * Discards `name`'s start mark without measuring it — for a `markStart` whose
+ * matching `markEnd` will never come (the operation it was timing was
+ * abandoned, e.g. by an abort) and that should not stick around as leftover
+ * state for whatever timing attempt comes next.
+ *
+ * `isDev` defaults to the build's dev flag but takes an explicit override so
+ * this stays unit-testable without faking Vite's env injection.
+ */
+export function clearStart(
+  name: string,
+  isDev: boolean = import.meta.env.DEV,
+): void {
+  if (!hasPerformance() || !isDev) return;
+  performance.clearMarks(`${name}${START_SUFFIX}`);
 }

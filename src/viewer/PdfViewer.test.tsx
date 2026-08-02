@@ -449,6 +449,25 @@ describe("PdfViewer", () => {
       expect(prefetchedOnly.length).toBeGreaterThan(0);
     });
 
+    it("gives a prefetched canvas the same page__canvas class as an on-screen one", async () => {
+      // A cache hit is re-attached to the DOM as-is (see PageCanvas), so a
+      // prefetched canvas missing this class would paint inline instead of
+      // `display: block` and throw off the page's layout once scrolled to.
+      const { doc } = renderViewer(200);
+      await scrollTo(3000);
+      const rendered = new Set(renderedPages());
+      vi.mocked(doc.renderPage).mockClear();
+
+      await scrollTo(9000);
+      await waitFor(() => {
+        const prefetchCall = vi
+          .mocked(doc.renderPage)
+          .mock.calls.find((call) => !rendered.has(call[0]));
+        expect(prefetchCall).toBeDefined();
+        expect(prefetchCall?.[1].canvas.className).toBe("page__canvas");
+      });
+    });
+
     it("cancels a pending prefetch when the document is replaced", async () => {
       const { doc, unmount } = renderViewer(200);
       await scrollTo(3000);

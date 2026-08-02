@@ -77,9 +77,13 @@ export type ScrollDirection = "forward" | "backward" | "none";
 
 /** Where {@link prefetchRange} suggests warming the render cache next. */
 export interface PrefetchTarget {
-  /** Items just past the visible range, in the direction of travel. */
+  /** Items just past the visible range, on its higher-DOM-index side. Gets
+   * the larger share of `count` when scrolling forward, the smaller (0-1)
+   * share when scrolling backward. */
   ahead: IndexRange;
-  /** Items just before the visible range, opposite the direction of travel. */
+  /** Items just before the visible range, on its lower-DOM-index side. Gets
+   * the larger share of `count` when scrolling backward, the smaller (0-1)
+   * share when scrolling forward. */
   behind: IndexRange;
 }
 

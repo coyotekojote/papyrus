@@ -338,10 +338,6 @@ export function PdfViewer({
    * {@link handleScroll}; read (not depended on) by the prefetch effect. */
   const scrollDirectionRef = useRef<ScrollDirection>("none");
   const lastScrollLeftRef = useRef(0);
-  /** The idle callback and abort for the render-cache prefetch (issue #12),
-   * so a new scroll position or an unmount can cancel work still pending. */
-  const prefetchIdleRef = useRef<number | null>(null);
-  const prefetchAbortRef = useRef<AbortController | null>(null);
 
   const spreads = useMemo(
     () => buildSpreads(doc.pageCount, viewMode),
@@ -437,21 +433,30 @@ export function PdfViewer({
     );
     if (pending.length === 0) return;
 
+    // Local to this effect run, not refs: nothing outside this closure ever
+    // reads them, and each new run of the effect (a further scroll, a zoom,
+    // a document switch) gets its own pair via the cleanup below rather than
+    // sharing state across runs.
     const controller = new AbortController();
-    prefetchAbortRef.current = controller;
+    let idleHandle: number | null = null;
 
     const warmNext = () => {
-      prefetchIdleRef.current = null;
+      idleHandle = null;
       if (controller.signal.aborted) return;
       const pageNumber = pending.shift();
       if (pageNumber === undefined) return;
       if (cache.get(pageNumber, zoom)) {
         // Warmed by something else (the visible range's own render, most
         // likely) since this was queued: move on without re-rendering it.
-        prefetchIdleRef.current = scheduleIdle(warmNext);
+        idleHandle = scheduleIdle(warmNext);
         return;
       }
       const canvas = document.createElement("canvas");
+      // A cache hit is spliced straight into the DOM as-is (see PageCanvas),
+      // so a prefetched canvas without this class would paint inline instead
+      // of `display: block` and throw off the page's baseline spacing the
+      // moment the reader scrolls to it.
+      canvas.className = "page__canvas";
       doc
         .renderPage(pageNumber, {
           scale: zoom,
@@ -467,18 +472,15 @@ export function PdfViewer({
         })
         .finally(() => {
           if (!controller.signal.aborted && pending.length > 0) {
-            prefetchIdleRef.current = scheduleIdle(warmNext);
+            idleHandle = scheduleIdle(warmNext);
           }
         });
     };
-    prefetchIdleRef.current = scheduleIdle(warmNext);
+    idleHandle = scheduleIdle(warmNext);
 
     return () => {
       controller.abort();
-      if (prefetchIdleRef.current !== null) {
-        cancelIdle(prefetchIdleRef.current);
-        prefetchIdleRef.current = null;
-      }
+      if (idleHandle !== null) cancelIdle(idleHandle);
     };
   }, [range, layout, domSpreads, doc, cache, zoom, total]);
 

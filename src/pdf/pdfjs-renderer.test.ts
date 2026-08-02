@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * A minimal stand-in for pdf.js's own module: just enough surface for
@@ -15,6 +15,10 @@ const getPage = vi.hoisted(() =>
       getViewport: vi.fn(({ scale }: { scale: number }) => ({
         width: 100 * scale,
         height: 200 * scale,
+      })),
+      render: vi.fn(() => ({
+        promise: Promise.resolve(),
+        cancel: vi.fn(),
       })),
     };
     return Promise.resolve(page);
@@ -143,5 +147,52 @@ describe("PdfJsRenderer page proxy cache", () => {
     for (const page of pages) {
       expect(page.cleanup).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe("PdfJsRenderer first-render mark (issue #12 self-review)", () => {
+  let debugSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    getPage.mockClear();
+    debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    performance.clearMarks();
+    performance.clearMeasures();
+  });
+
+  afterEach(() => {
+    debugSpy.mockRestore();
+  });
+
+  it("re-arms the first-render mark when the first attempt is abandoned to an abort", async () => {
+    const doc = await new PdfJsRenderer().open(new Uint8Array());
+    debugSpy.mockClear(); // drop the "pdfjs:open" log from opening the document above
+    const controller = new AbortController();
+    controller.abort();
+
+    // Abandoned before pdf.js's own render call — a document switch racing
+    // the first page is not unusual. This must not permanently consume the
+    // "first render" slot: nothing was actually timed.
+    await doc.renderPage(1, {
+      scale: 1,
+      canvas: document.createElement("canvas"),
+      signal: controller.signal,
+    });
+    expect(
+      performance.getEntriesByName("pdfjs:first-render-page:start", "mark"),
+    ).toHaveLength(0);
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    // The next attempt — the one that actually reaches pdf.js's render call
+    // — is what should be timed as "first render". jsdom has no real 2d
+    // context (that needs the native `canvas` package), so it is stubbed.
+    const canvas = document.createElement("canvas");
+    vi.spyOn(canvas, "getContext").mockReturnValue(
+      {} as unknown as CanvasRenderingContext2D,
+    );
+    await doc.renderPage(2, { scale: 1, canvas });
+
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy.mock.calls[0][0]).toContain("pdfjs:first-render-page");
   });
 });
