@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendBlock,
   imageSrc,
   inlineText,
+  isRelativeSrc,
   linkHref,
   parseInline,
   parseMarkdown,
@@ -239,9 +241,15 @@ describe("parseInline", () => {
     ]);
   });
 
-  it("keeps a sidecar-relative image as alt text only", () => {
+  it("keeps a sidecar-relative clip as written, for the app to resolve", () => {
     expect(parseInline("![図2](clips/clip-0001.png)")).toEqual([
-      { kind: "image", src: null, alt: "図2" },
+      { kind: "image", src: "clips/clip-0001.png", alt: "図2" },
+    ]);
+  });
+
+  it("drops an image source it would not fetch", () => {
+    expect(parseInline("![図3](javascript:alert)")).toEqual([
+      { kind: "image", src: null, alt: "図3" },
     ]);
   });
 
@@ -276,7 +284,42 @@ describe("linkHref / imageSrc", () => {
       "data:image/png;base64,AAAA",
     );
     expect(imageSrc("data:text/html,<script>")).toBeNull();
-    expect(imageSrc("clips/clip-0001.png")).toBeNull();
+    expect(imageSrc("javascript:alert(1)")).toBeNull();
+    expect(imageSrc("//evil.test/f.png")).toBeNull();
+    expect(imageSrc("   ")).toBeNull();
+  });
+
+  it("keeps a sidecar-relative clip for the app to resolve", () => {
+    expect(imageSrc("clips/clip-0001.png")).toBe("clips/clip-0001.png");
+    expect(imageSrc(" clips/clip-0001.png ")).toBe("clips/clip-0001.png");
+  });
+});
+
+describe("isRelativeSrc", () => {
+  it("is true only for sources the WebView cannot fetch itself", () => {
+    expect(isRelativeSrc("clips/clip-0001.png")).toBe(true);
+    expect(isRelativeSrc("figure.png")).toBe(true);
+    expect(isRelativeSrc("https://a.test/f.png")).toBe(false);
+    expect(isRelativeSrc("data:image/png;base64,AAAA")).toBe(false);
+    expect(isRelativeSrc("//a.test/f.png")).toBe(false);
+  });
+});
+
+describe("appendBlock", () => {
+  it("starts an empty note with the block alone", () => {
+    expect(appendBlock("", "> 引用\n>\n> — p.1")).toBe("> 引用\n>\n> — p.1\n");
+  });
+
+  it("separates the block from existing notes with one blank line", () => {
+    expect(appendBlock("# メモ\n本文\n\n", "> 引用")).toBe(
+      "# メモ\n本文\n\n> 引用\n",
+    );
+  });
+
+  it("appends an image the same way", () => {
+    expect(appendBlock("本文", "![p.5 の図](clips/clip-0001.png)")).toBe(
+      "本文\n\n![p.5 の図](clips/clip-0001.png)\n",
+    );
   });
 });
 

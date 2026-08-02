@@ -20,6 +20,21 @@ export interface RenderPageOptions {
   signal?: AbortSignal;
 }
 
+/** A rectangle in page-normalized (0-1) coordinates, as annotations store it. */
+export interface RegionRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface RenderRegionOptions {
+  /** The part of the page to cut out, in page-normalized (0-1) coordinates. */
+  rect: RegionRect;
+  /** Aborts an in-flight render (e.g. the reader left the document). */
+  signal?: AbortSignal;
+}
+
 export interface RenderTextLayerOptions {
   /** Same scale as the page canvas, so the text sits exactly over the paint. */
   scale: number;
@@ -50,6 +65,11 @@ export interface PdfDocumentHandle {
   getPageSize(pageNumber: number): Promise<PageSize>;
   /** 1-based page number. Draws the page into `options.canvas`. */
   renderPage(pageNumber: number, options: RenderPageOptions): Promise<void>;
+  /**
+   * 1-based page number. Renders just `options.rect` of the page, at a higher
+   * resolution than the screen shows, and resolves to it as a PNG.
+   */
+  renderRegion(pageNumber: number, options: RenderRegionOptions): Promise<Blob>;
   /**
    * 1-based page number. Fills `options.container` with selectable text spans
    * positioned over the rendered page (replacing any previous contents).

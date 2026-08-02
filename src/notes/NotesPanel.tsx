@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import type { Clip } from "../files/sidecar";
 import { MarkdownView } from "./MarkdownView";
+import { useClipImages } from "./use-clip-images";
 import type { NotesStatus } from "./use-notes";
 
 type Mode = "edit" | "preview";
@@ -15,6 +17,10 @@ const STATUS_LABEL: Record<NotesStatus, string> = {
 };
 
 export interface NotesPanelProps {
+  /** Path of the PDF on disk; the clips the preview shows live in its sidecar. */
+  pdfPath: string;
+  /** Clips recorded for this document, for resolving `![](clips/…)`. */
+  clips: readonly Clip[];
   content: string;
   loaded: boolean;
   status: NotesStatus;
@@ -33,6 +39,8 @@ export interface NotesPanelProps {
  * works in any text field, so voice input needs nothing of its own here.
  */
 export function NotesPanel({
+  pdfPath,
+  clips,
   content,
   loaded,
   status,
@@ -43,6 +51,9 @@ export function NotesPanel({
   onTakeDisk,
 }: NotesPanelProps) {
   const [mode, setMode] = useState<Mode>("edit");
+  const clipFiles = useMemo(() => clips.map((clip) => clip.file), [clips]);
+  // Clips are only read for the preview: the editor shows the markdown itself.
+  const images = useClipImages(pdfPath, clipFiles, mode === "preview");
 
   return (
     <div className="notes">
@@ -120,7 +131,7 @@ export function NotesPanel({
           {content.trim() === "" ? (
             <p className="sidebar__status">まだメモはありません。</p>
           ) : (
-            <MarkdownView source={content} />
+            <MarkdownView source={content} images={images} />
           )}
         </div>
       )}

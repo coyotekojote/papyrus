@@ -71,7 +71,7 @@ graph TB
         FS["ファイルアクセス<br/>(sidecar 読み書き / atomic write)"]
         Trans["翻訳プロバイダ抽象化<br/>(Claude / OpenAI / DeepL)"]
         Keys["APIキー管理<br/>(OS キーチェーン)"]
-        Clip["画像切り出し<br/>(ページ→PNG)"]
+        Clip["クリップ保存<br/>(PNG→clips/)"]
     end
     Viewer --> Annot
     Annot -->|保存| FS
@@ -84,7 +84,7 @@ graph TB
 ### 責務分担
 
 - **フロントエンド**: レンダリング、UI状態（ページ送り・見開き・綴じ方向）、注釈の描画と編集
-- **Rust側**: ファイルI/O 一切（sidecar 読み書き、atomic write）、外部API呼び出し（CORS回避 & キーをWebViewに渡さない）、APIキーのキーチェーン保存、画像切り出し
+- **Rust側**: ファイルI/O 一切（sidecar 読み書き、atomic write、クリップPNGの採番と保存）、外部API呼び出し（CORS回避 & キーをWebViewに渡さない）、APIキーのキーチェーン保存
 
 ## 主要機能の設計方針
 
@@ -102,6 +102,8 @@ graph TB
 ### 図の切り取り
 
 - 矩形選択モード → 該当ページを高解像度レンダリング → 矩形部分を PNG 保存 → notes.md に `![](clips/clip-xxxx.png)` を挿入
+- レンダリングはフロント側で行う（pdf.js が既にページを持っているため）。ビューポートをオフセットして矩形部分だけを描画し、PNG のバイト列を Rust に渡す。Rust は採番（`clip-NNNN.png`）と atomic write だけを担当する
+- プレビューの画像は WebView が直接読めないので、Rust から読み出したバイト列を blob URL にして表示する（asset プロトコルを開けるより狭く、iOS でも同じ経路）
 
 ### 翻訳
 

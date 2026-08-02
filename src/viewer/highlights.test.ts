@@ -4,7 +4,6 @@ import { emptyAnnotations } from "../files/sidecar";
 import {
   HIGHLIGHT_COLORS,
   addHighlight,
-  appendQuote,
   formatHighlightQuote,
   highlightAtPoint,
   highlightColorCss,
@@ -237,16 +236,6 @@ describe("notes quotes", () => {
   it("quotes empty lines without trailing spaces", () => {
     expect(formatHighlightQuote(highlight({ text: "上\n\n下" }))).toBe(
       "> 上\n>\n> 下\n>\n> — p.1",
-    );
-  });
-
-  it("starts empty notes with the quote alone", () => {
-    expect(appendQuote("", "> 引用\n>\n> — p.1")).toBe("> 引用\n>\n> — p.1\n");
-  });
-
-  it("separates the quote from existing notes with one blank line", () => {
-    expect(appendQuote("# メモ\n本文\n\n", "> 引用")).toBe(
-      "# メモ\n本文\n\n> 引用\n",
     );
   });
 });

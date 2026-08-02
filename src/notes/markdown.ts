@@ -288,14 +288,39 @@ export function linkHref(url: string): string | null {
   return /^(https?:|mailto:)/i.test(trimmed) ? trimmed : null;
 }
 
+/** Anything of the form `scheme:`, plus protocol-relative `//host/…` URLs. */
+const ABSOLUTE_URL = /^([a-z][a-z0-9+.-]*:|\/\/)/i;
+
 /**
- * Images have to be fetchable by the WebView. Sidecar-relative clips
- * (`clips/clip-0001.png`) are not, until issue #8 resolves them to asset URLs —
- * until then they show their alt text instead of a broken image.
+ * Image sources worth trying to show: ones the WebView can fetch by itself,
+ * and sidecar-relative clips (`clips/clip-0001.png`) which it cannot — those
+ * are kept as written for {@link isRelativeSrc} callers to resolve. Anything
+ * with a scheme we would not fetch — `javascript:` above all — is dropped and
+ * the alt text stands in.
  */
 export function imageSrc(url: string): string | null {
   const trimmed = url.trim();
-  return /^(https?:|data:image\/)/i.test(trimmed) ? trimmed : null;
+  if (trimmed === "") return null;
+  if (/^(https?:|data:image\/)/i.test(trimmed)) return trimmed;
+  return ABSOLUTE_URL.test(trimmed) ? null : trimmed;
+}
+
+/**
+ * True for a source the WebView cannot fetch on its own — a path relative to
+ * the sidecar folder, which only the backend can read (see `loadClip`).
+ */
+export function isRelativeSrc(src: string): boolean {
+  return !ABSOLUTE_URL.test(src);
+}
+
+/**
+ * Appends a block to a note, keeping exactly one blank line between entries.
+ * Both of the things the app writes into a note by itself — a highlight's
+ * quote (#6) and a clip's image (#8) — go through here.
+ */
+export function appendBlock(notes: string, block: string): string {
+  const trimmed = notes.replace(/\s+$/, "");
+  return trimmed === "" ? `${block}\n` : `${trimmed}\n\n${block}\n`;
 }
 
 /** Plain text of a tree, for tests and for the panel's empty-state check. */
