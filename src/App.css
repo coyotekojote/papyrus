@@ -69,16 +69,133 @@ body {
   color: #ff8080;
 }
 
-.recent {
-  width: min(640px, 100%);
+.library {
+  width: min(900px, 100%);
   margin-top: 2rem;
 }
 
-.recent__heading {
+.library__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.library__heading {
+  margin: 0;
   font-size: 0.85rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
+}
+
+.library__controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.library__search {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.85rem;
+  min-width: 12rem;
+}
+
+.library__modes {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.library__mode {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.library__mode[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.library__grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1.25rem;
+}
+
+.library__tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.library__cover {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  overflow: hidden;
+  aspect-ratio: 3 / 4;
+  cursor: pointer;
+}
+
+.library__cover:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.library__cover:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.cover__image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #fff;
+}
+
+.cover__placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 1.5rem;
+}
+
+.cover__placeholder--failed {
+  background: var(--surface);
+}
+
+.library__tileMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.library__tileName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
 }
 
 .recent__empty {
