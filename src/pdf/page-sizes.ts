@@ -1,3 +1,4 @@
+import { markEnd, markStart } from "../perf/marks";
 import type { PageSize, PdfDocumentHandle } from "./types";
 
 /** Fallback used when a page's real size cannot be read (US Letter, 72dpi). */
@@ -26,17 +27,22 @@ export async function loadPageSizes(
     );
   }
 
+  markStart("pdf:page-sizes");
   const sizes: PageSize[] = [];
-  for (let start = 1; start <= doc.pageCount; start += chunkSize) {
-    if (signal?.aborted) return sizes;
-    const end = Math.min(start + chunkSize - 1, doc.pageCount);
-    const batch = await Promise.all(
-      Array.from({ length: end - start + 1 }, (_, i) =>
-        doc.getPageSize(start + i).catch(() => FALLBACK_PAGE_SIZE),
-      ),
-    );
-    sizes.push(...batch);
-    onProgress?.(sizes);
+  try {
+    for (let start = 1; start <= doc.pageCount; start += chunkSize) {
+      if (signal?.aborted) return sizes;
+      const end = Math.min(start + chunkSize - 1, doc.pageCount);
+      const batch = await Promise.all(
+        Array.from({ length: end - start + 1 }, (_, i) =>
+          doc.getPageSize(start + i).catch(() => FALLBACK_PAGE_SIZE),
+        ),
+      );
+      sizes.push(...batch);
+      onProgress?.(sizes);
+    }
+    return sizes;
+  } finally {
+    markEnd("pdf:page-sizes");
   }
-  return sizes;
 }

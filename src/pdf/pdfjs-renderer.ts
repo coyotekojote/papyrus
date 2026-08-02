@@ -19,6 +19,7 @@ import workerUrl from "./pdf-worker?worker&url";
 
 import { backingStoreRatio } from "./canvas-scale";
 import { resolveOutline } from "./outline-resolve";
+import { markEnd, markStart } from "../perf/marks";
 import { clampRegion } from "./region";
 import {
   PdfPageOutOfRangeError,
@@ -75,6 +76,9 @@ class PdfJsDocument implements PdfDocumentHandle {
   private readonly pages = new Map<number, Promise<PDFPageProxy>>();
   private outline: Promise<OutlineNode[]> | null = null;
   private destroyed = false;
+  /** Marks only the very first `renderPage` on this document — the one that
+   * decides how long the reader stares at a blank page after opening. */
+  private firstRenderMarked = false;
 
   constructor(
     private readonly doc: PDFDocumentProxy,
@@ -111,6 +115,10 @@ class PdfJsDocument implements PdfDocumentHandle {
     pageNumber: number,
     { scale, canvas, signal }: RenderPageOptions,
   ): Promise<void> {
+    const isFirstRender = !this.firstRenderMarked;
+    this.firstRenderMarked = true;
+    if (isFirstRender) markStart("pdfjs:first-render-page");
+
     const page = await this.page(pageNumber);
     if (signal?.aborted || this.destroyed) return;
 
@@ -143,6 +151,7 @@ class PdfJsDocument implements PdfDocumentHandle {
       await task.promise;
     } finally {
       signal?.removeEventListener("abort", onAbort);
+      if (isFirstRender) markEnd("pdfjs:first-render-page");
     }
   }
 
@@ -252,6 +261,7 @@ export class PdfJsRenderer implements PdfRenderer {
   readonly id = "pdfjs";
 
   async open(data: Uint8Array): Promise<PdfDocumentHandle> {
+    markStart("pdfjs:open");
     // pdf.js transfers and neuters the buffer it is given, so hand it a copy:
     // callers (and the recent-files retry path) keep using their own bytes.
     const loadingTask = getDocument({
@@ -263,7 +273,11 @@ export class PdfJsRenderer implements PdfRenderer {
       standardFontDataUrl: "/pdfjs/standard_fonts/",
       wasmUrl: "/pdfjs/wasm/",
     });
-    const doc = await loadingTask.promise;
-    return new PdfJsDocument(doc, loadingTask);
+    try {
+      const doc = await loadingTask.promise;
+      return new PdfJsDocument(doc, loadingTask);
+    } finally {
+      markEnd("pdfjs:open");
+    }
   }
 }

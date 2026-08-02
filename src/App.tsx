@@ -19,6 +19,7 @@ import {
   type PageSize,
   type PdfDocumentHandle,
 } from "./pdf";
+import { markEnd, markStart } from "./perf/marks";
 import { SettingsDialog } from "./settings/SettingsDialog";
 import { useSettings } from "./settings/use-settings";
 import { StartScreen } from "./StartScreen";
@@ -86,7 +87,9 @@ function App() {
       setBusy(true);
       setError(null);
       try {
+        markStart("app:read-file");
         const bytes = await readPdfFileWithBookmark(path, bookmark);
+        markEnd("app:read-file");
         const renderer = await loadDefaultRenderer();
         const doc = await renderer.open(bytes);
         const pageSizes = await loadPageSizes(doc);
