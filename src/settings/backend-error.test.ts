@@ -41,6 +41,16 @@ describe("backend errors", () => {
     );
   });
 
+  it("treats an inherited property name as an unknown kind", () => {
+    // The kind comes off the wire. Looked up on a plain object, these would
+    // answer with something inherited — a crash, or a nonsense message.
+    for (const kind of ["__proto__", "toString", "constructor"]) {
+      expect(describeError({ kind, message: "details" })).toBe(
+        `${kind}: details`,
+      );
+    }
+  });
+
   it("passes an Error through unchanged", () => {
     const cause = new Error("already an error");
     expect(toError(cause)).toBe(cause);

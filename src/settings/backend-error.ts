@@ -28,17 +28,31 @@ type Describe = (
   operation: SettingsOperation | "unknown",
 ) => string;
 
-const MESSAGES: Record<string, Describe> = {
-  configDirUnavailable: () => "設定の保存先フォルダが見つかりません",
-  serialize: () => "設定を書き出せませんでした",
-  io: (error, operation) =>
-    `${IO_MESSAGE[operation]}: ${error.message ?? ""}`.trim(),
-  unknownProvider: (error) =>
-    `対応していない翻訳プロバイダです: ${error.provider ?? ""}`.trim(),
-  emptyKey: () => "APIキーが入力されていません",
-  keychain: (error) =>
-    `キーチェーンを操作できませんでした: ${error.message ?? ""}`.trim(),
-};
+/**
+ * A Map rather than an object: the `kind` comes off the wire, and a plain
+ * object would answer `__proto__` or `toString` with something inherited —
+ * turning the fallback for an unknown kind into a crash or a nonsense message.
+ */
+const MESSAGES = new Map<string, Describe>([
+  ["configDirUnavailable", () => "設定の保存先フォルダが見つかりません"],
+  ["serialize", () => "設定を書き出せませんでした"],
+  [
+    "io",
+    (error, operation) =>
+      `${IO_MESSAGE[operation]}: ${error.message ?? ""}`.trim(),
+  ],
+  [
+    "unknownProvider",
+    (error) =>
+      `対応していない翻訳プロバイダです: ${error.provider ?? ""}`.trim(),
+  ],
+  ["emptyKey", () => "APIキーが入力されていません"],
+  [
+    "keychain",
+    (error) =>
+      `キーチェーンを操作できませんでした: ${error.message ?? ""}`.trim(),
+  ],
+]);
 
 function isBackendError(error: unknown): error is BackendError {
   return (
@@ -51,7 +65,7 @@ function isBackendError(error: unknown): error is BackendError {
 export function toError(error: unknown, operation?: SettingsOperation): Error {
   if (error instanceof Error) return error;
   if (isBackendError(error)) {
-    const describe = MESSAGES[error.kind];
+    const describe = MESSAGES.get(error.kind);
     // An unrecognized kind still says which one it was: a build that adds an
     // error this one has no wording for should not go out as a blank message.
     return new Error(
