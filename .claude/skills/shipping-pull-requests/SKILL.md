@@ -58,9 +58,13 @@ cd src-tauri && mise exec -- cargo fmt --check && mise exec -- cargo clippy -- -
 .claude/skills/shipping-pull-requests/scripts/wait-for-review.sh <PR番号> [タイムアウト秒]
 ```
 
-必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になり、かつ **現在の HEAD コミットに対する** CodeRabbit のレビューが完了するまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI かレビューが失敗。
+必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になり、かつ **現在の HEAD コミットに対する** CodeRabbit のレビューが完了するまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI かレビューが失敗 / `3` CodeRabbit がレート制限でレビューしなかった。
 
 レビューの完了判定には `CodeRabbit` という **commit status**（`Review in progress` → `success`）を使う。レビューの存在だけで判定すると、本文が空のレビューが先に API に現れるため、まだ進行中なのに完了と誤認する。`gh pr checks` には出るが check-run ではなく commit status なので、`/commits/<sha>/status` で取る。
+
+state だけでは足りず `description` も見る。**レート制限に当たると CodeRabbit はレビューを実行しないまま state を `success` にし、`description` に `Review rate limited` と書く**。state だけを見るとレビュー完了と区別が付かないが、実際にはそのコミットは読まれていない。スクリプトはこれを検出して `3` で抜ける。短時間に何周も回した後に起きやすい。
+
+`3` で抜けたら、**それを「指摘なし」と読まない**。時間を置いてから（15 分ではまだ解けないことがある）PR に `@coderabbitai review` とコメントして依頼し直す。それでも `3` が続くなら、未レビューの差分の中身をユーザーに伝えて判断を仰ぐ。
 
 必須ジョブ名はスクリプト内の `REQUIRED_CHECKS` にある。`.github/workflows/ci.yml` のジョブ名を変えたらここも直す（放置するとタイムアウトするまで `missing` のまま待ち続ける）。
 
@@ -150,7 +154,7 @@ push すると CodeRabbit が増分レビューを返すので、2 に戻る。�
 - 直近の CodeRabbit レビューに新しい指摘がない（レビュー本文が空、または `Actionable comments posted: 0`）
 - CI が全て通過
 
-commit status が `pending` の間は判断しない。レビューがまだ出ていないだけを「指摘なし」と読むと、収束していないのに完了と報告することになる。
+commit status が `pending` の間は判断しない。レビューがまだ出ていないだけを「指摘なし」と読むと、収束していないのに完了と報告することになる。`success` でも `description` が `Review rate limited` なら同じで、そのコミットはまだ読まれていない（`wait-for-review.sh` は `3` で抜ける）。
 
 同じ指摘が3周以上続く、または CodeRabbit と自分の判断が食い違って決着しない場合は、ループを止めてユーザーに判断を仰ぐ。
 
@@ -158,6 +162,7 @@ commit status が `pending` の間は判断しない。レビューがまだ出�
 
 - CodeRabbit App はインストール済み。設定は `.coderabbit.yaml`（レビュー言語は日本語、`profile: chill`、Request changes なし）
 - CodeRabbit は `commit_status`（既定で有効）により `CodeRabbit` という commit status を出す。これが `pending` の間はまだレビュー中。**新しいレビューが来ていないのではなく、まだ出ていない**ので待つ
+- レート制限あり。短時間に何周も回すと `Review rate limited`（state は `success`）でレビューが飛ばされる。この状態で `@coderabbitai review` と依頼しても「再レビューします / Review finished」と返ってくるだけで実際には読まれないので、時間を置いてから依頼し直す
 - Finishing Touches は全て無効化済み。CodeRabbit はコードを書かない。修正は必ず自分で入れる
 - Copilot もレビューを付けることがあるが、毎回は走らない。待機条件には含めない。付いていたら同じ手順で対応する
 - CI は macOS ランナーで3ジョブ。Tauri build は frontend / rust の後に走るため全体で数分かかる
