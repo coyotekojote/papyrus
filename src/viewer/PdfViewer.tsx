@@ -186,6 +186,15 @@ export function PdfViewer({
   const createClipRef = useRef<
     (page: number, rect: NormalizedRect) => Promise<void>
   >(() => Promise.resolve());
+  /**
+   * Whether the note can take an image, as of the last commit. A cut spans
+   * several awaits, and the `notes` object it started with says what was true
+   * when it began — not what is true when it finishes.
+   */
+  const notesStateRef = useRef<{ loaded: boolean; conflict: string | null }>({
+    loaded: false,
+    conflict: null,
+  });
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
@@ -571,6 +580,16 @@ export function PdfViewer({
    * leaves at worst an orphaned PNG — never an annotations entry (or a note)
    * pointing at a picture that is not there.
    */
+  /** Why the note cannot take an image right now, or null when it can. */
+  const notesRefusal = useCallback((): string | null => {
+    const { loaded, conflict } = notesStateRef.current;
+    if (!loaded) return "メモをまだ読み込めていないため、切り取りできません";
+    if (conflict !== null) {
+      return "メモが競合しています。どちらを残すか選んでから切り取ってください";
+    }
+    return null;
+  }, []);
+
   const createClip = useCallback(
     async (page: number, rect: NormalizedRect) => {
       // The annotations hook drops mutations until the sidecar has loaded;
@@ -584,15 +603,10 @@ export function PdfViewer({
       // A clip this build cannot put in the note is a clip the reader has no
       // way back to: there is no clips panel, and nothing draws them on the
       // page. Rather than cut a PNG nobody can reach, the whole thing waits
-      // until the note can take it — both states below resolve on their own.
-      if (!notes.loaded) {
-        setClipError("メモをまだ読み込めていないため、切り取りできません");
-        return;
-      }
-      if (notes.conflict !== null) {
-        setClipError(
-          "メモが競合しています。どちらを残すか選んでから切り取ってください",
-        );
+      // until the note can take it — both states resolve on their own.
+      const refusedUpFront = notesRefusal();
+      if (refusedUpFront) {
+        setClipError(refusedUpFront);
         setNotesOpen(true);
         return;
       }
@@ -613,10 +627,29 @@ export function PdfViewer({
         // check is repeated on both sides of the write.
         const encoded = await blobToBase64(png);
         if (controller.signal.aborted) return;
+        // The note can go out from under a cut that is already running — an
+        // iCloud sync landing mid-render is enough. Re-checked here so a
+        // clip that has become uninsertable costs no file at all.
+        const refusedBeforeWrite = notesRefusal();
+        if (refusedBeforeWrite) {
+          setClipError(refusedBeforeWrite);
+          setNotesOpen(true);
+          return;
+        }
         const file = await saveClip(filePath, encoded);
         if (controller.signal.aborted) return;
+        // Past this point the PNG exists. If the note turned unusable during
+        // the write, the clip is still recorded: a file annotations.json does
+        // not know about is lost to every device, while an entry without the
+        // markdown is one the reader can still be pointed at.
         const clip = makeClip({ page, rect, file, createdAt: new Date() });
         annotations.addClip(clip);
+        const refusedAfterWrite = notesRefusal();
+        if (refusedAfterWrite) {
+          setClipError(`${refusedAfterWrite}（切り取り自体は保存済みです）`);
+          setNotesOpen(true);
+          return;
+        }
         appendToNotes(() => notes.insertImage(clip));
       } catch (cause) {
         if (controller.signal.aborted) return;
@@ -628,7 +661,7 @@ export function PdfViewer({
         }
       }
     },
-    [annotations, appendToNotes, doc, filePath, notes],
+    [annotations, appendToNotes, doc, filePath, notes, notesRefusal],
   );
 
   // Written after the commit, not during the render. A render React throws
@@ -638,30 +671,39 @@ export function PdfViewer({
   useEffect(() => {
     createClipRef.current = createClip;
     dragRef.current = drag;
+    notesStateRef.current = { loaded: notes.loaded, conflict: notes.conflict };
   });
 
-  const beginClipDrag = useCallback((event: ReactPointerEvent) => {
-    const pageElement = closestPage(
-      event.target instanceof Node ? event.target : null,
-    );
-    const bodyRect = bodyRef.current?.getBoundingClientRect();
-    if (!pageElement || !bodyRect) return;
-    const pageRect = pageElement.getBoundingClientRect();
-    if (pageRect.width <= 0 || pageRect.height <= 0) return;
-    // Without this the drag would also select the text layer underneath, and
-    // release would leave the highlight popup behind.
-    event.preventDefault();
+  const beginClipDrag = useCallback(
+    (event: ReactPointerEvent) => {
+      // `saveClip` takes no abort signal, so a cut that has reached the write
+      // finishes whatever happens next. Starting another one on top of it
+      // would leave the first PNG on disk with nothing referring to it — the
+      // notice says a cut is still running, and this drag waits for it.
+      if (clipping || dragRef.current !== null) return;
+      const pageElement = closestPage(
+        event.target instanceof Node ? event.target : null,
+      );
+      const bodyRect = bodyRef.current?.getBoundingClientRect();
+      if (!pageElement || !bodyRect) return;
+      const pageRect = pageElement.getBoundingClientRect();
+      if (pageRect.width <= 0 || pageRect.height <= 0) return;
+      // Without this the drag would also select the text layer underneath, and
+      // release would leave the highlight popup behind.
+      event.preventDefault();
 
-    const point = { x: event.clientX, y: event.clientY };
-    setClipError(null);
-    setDrag({
-      page: Number(pageElement.dataset.page),
-      pageRect,
-      origin: { x: bodyRect.left, y: bodyRect.top },
-      start: point,
-      current: point,
-    });
-  }, []);
+      const point = { x: event.clientX, y: event.clientY };
+      setClipError(null);
+      setDrag({
+        page: Number(pageElement.dataset.page),
+        pageRect,
+        origin: { x: bodyRect.left, y: bodyRect.top },
+        start: point,
+        current: point,
+      });
+    },
+    [clipping],
+  );
 
   // Tracked on the window rather than the scroller: a drag that leaves the
   // pages — over a panel, or off the window — still has to finish where the
