@@ -79,12 +79,13 @@ export function parseRecentFiles(raw: string | null): RecentFile[] {
   for (const entry of parsed) {
     if (!isRecentFile(entry) || seen.has(entry.path)) continue;
     seen.add(entry.path);
-    const bookmark = (entry as Record<string, unknown>).bookmark;
     files.push({
       path: entry.path,
       name: entry.name,
       openedAt: entry.openedAt,
-      ...(typeof bookmark === "string" ? { bookmark } : {}),
+      ...(typeof entry.bookmark === "string"
+        ? { bookmark: entry.bookmark }
+        : {}),
     });
     if (files.length >= MAX_RECENT_FILES) break;
   }
