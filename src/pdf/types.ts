@@ -86,6 +86,12 @@ export interface PdfDocumentHandle {
 export interface PdfRenderer {
   /** Stable identifier, useful for diagnostics and cache keys. */
   readonly id: string;
+  /**
+   * Opens a document from its raw bytes. Takes ownership of `data` — a
+   * renderer may transfer or otherwise reuse the buffer, so callers must not
+   * read from it (or pass it to another `open`) after this returns. Pass a
+   * copy if the caller still needs its own.
+   */
   open(data: Uint8Array): Promise<PdfDocumentHandle>;
 }
 

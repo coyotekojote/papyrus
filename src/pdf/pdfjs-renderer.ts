@@ -20,6 +20,7 @@ import workerUrl from "./pdf-worker?worker&url";
 import { backingStoreRatio } from "./canvas-scale";
 import { resolveOutline } from "./outline-resolve";
 import { markEnd, markStart } from "../perf/marks";
+import { LruCache } from "./lru-cache";
 import { clampRegion } from "./region";
 import {
   PdfPageOutOfRangeError,
@@ -42,6 +43,34 @@ GlobalWorkerOptions.workerSrc = workerUrl;
  * large enough that the canvas would stop being paintable.
  */
 const CLIP_SCALE = 3;
+
+/**
+ * How many `PDFPageProxy` objects a document keeps alive at once. Unlike
+ * {@link PageRenderCache}, this is not about rendered pixels — a page proxy
+ * mainly holds parsed content-stream/operator-list state — but a document the
+ * reader scrolls end to end (a scan, a long thesis) would otherwise grow this
+ * without bound for as long as the document stays open.
+ */
+const PAGE_PROXY_CACHE_CAPACITY = 64;
+
+/**
+ * Releases a page proxy's resources once it is no longer cached. Evicting a
+ * promise that has not resolved yet is safe: the fetch already in flight is
+ * left to finish on its own (pdf.js has no way to cancel `getPage`), and
+ * `cleanup` simply runs once it does. If the proxy is mid-render when this
+ * fires, `cleanup` reports that by returning `false` rather than throwing —
+ * nothing else to do here but leave it be until it is next evicted.
+ */
+function cleanupPage(pending: Promise<PDFPageProxy>): void {
+  pending.then(
+    (page) => {
+      page.cleanup();
+    },
+    () => {
+      // The fetch itself failed — there is no proxy to clean up.
+    },
+  );
+}
 
 function devicePixelRatio(): number {
   return typeof window === "undefined" ? 1 : (window.devicePixelRatio ?? 1);
@@ -73,7 +102,10 @@ function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob> {
 class PdfJsDocument implements PdfDocumentHandle {
   readonly pageCount: number;
 
-  private readonly pages = new Map<number, Promise<PDFPageProxy>>();
+  private readonly pages = new LruCache<number, Promise<PDFPageProxy>>(
+    PAGE_PROXY_CACHE_CAPACITY,
+    (_, pending) => cleanupPage(pending),
+  );
   private outline: Promise<OutlineNode[]> | null = null;
   private destroyed = false;
   /** Marks only the very first `renderPage` on this document — the one that
@@ -262,10 +294,15 @@ export class PdfJsRenderer implements PdfRenderer {
 
   async open(data: Uint8Array): Promise<PdfDocumentHandle> {
     markStart("pdfjs:open");
-    // pdf.js transfers and neuters the buffer it is given, so hand it a copy:
-    // callers (and the recent-files retry path) keep using their own bytes.
+    // pdf.js transfers and neuters the buffer it is given. Every caller in
+    // this app (App.tsx's openPath, PdfCover's renderCover) reads `data`
+    // fresh from disk right before this call and never touches it again, so
+    // there is nothing left for a defensive copy to protect — handing pdf.js
+    // the buffer directly avoids doubling peak memory on a large PDF. A
+    // future caller that needs to keep using its own bytes must copy before
+    // calling `open`, per the `PdfRenderer.open` contract.
     const loadingTask = getDocument({
-      data: data.slice(),
+      data,
       // Bundled by the `papyrus:pdfjs-runtime-assets` Vite plugin. Without
       // these, CJK documents fall back to substituted glyphs.
       cMapUrl: "/pdfjs/cmaps/",
