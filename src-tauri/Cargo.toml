@@ -46,6 +46,21 @@ tempfile = "3"
 security-framework = "3"
 security-framework-sys = "2"
 
+# Security-scoped bookmarks (bookmarks.rs) have no Tauri plugin support, so
+# NSURL is called directly. iOS-only: on macOS the same feature would need the
+# `.withSecurityScope` creation option, which does not exist on iOS, so the
+# two platforms are not sharing this code path.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+  "NSArray",
+  "NSData",
+  "NSError",
+  "NSObject",
+  "NSString",
+  "NSURL",
+] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

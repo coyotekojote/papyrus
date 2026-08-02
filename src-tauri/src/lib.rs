@@ -1,3 +1,4 @@
+pub mod bookmarks;
 pub mod keychain;
 pub mod settings;
 pub mod sidecar;
@@ -24,6 +25,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            bookmarks::create_bookmark,
+            bookmarks::resolve_bookmark,
             sidecar::load_annotations,
             sidecar::save_annotations,
             sidecar::load_notes,
