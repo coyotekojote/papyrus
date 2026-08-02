@@ -97,6 +97,16 @@ describe("dictationHint", () => {
     expect(hint).toContain("編集 > 音声入力を開始");
   });
 
+  it("notes that the fn-key shortcut only works once dictation is turned on", () => {
+    // The fn-key shortcut does nothing if the user has never enabled
+    // dictation, so the hint must not read as an unconditional promise.
+    const hint = dictationHint("macos");
+
+    expect(hint).toContain(
+      "システム設定 > キーボード で音声入力をオンにしておく必要があります",
+    );
+  });
+
   it("tells iOS users about the keyboard microphone button", () => {
     const hint = dictationHint("ios");
 
