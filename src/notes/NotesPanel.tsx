@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import type { Clip } from "../files/sidecar";
+import { detectDictationPlatform, dictationHint } from "./dictation";
 import { MarkdownView } from "./MarkdownView";
 import { useClipImages } from "./use-clip-images";
 import type { NotesStatus } from "./use-notes";
@@ -36,7 +37,12 @@ export interface NotesPanelProps {
  * The notes panel (issue #7): a plain markdown editor with a preview.
  *
  * The editor is an ordinary <textarea> on purpose — OS dictation (macOS / iOS)
- * works in any text field, so voice input needs nothing of its own here.
+ * works in any text field, so voice input needs nothing of its own here. The
+ * "音声入力" button (issue #13) does not start recognition itself: there is
+ * no web API to trigger OS dictation from JavaScript (Web Speech API is not
+ * exposed in a WKWebView, and macOS dictation only starts from its own
+ * fn-key/menu gesture). It only focuses the editor and shows the user how to
+ * start dictation themselves.
  */
 export function NotesPanel({
   pdfPath,
@@ -51,9 +57,29 @@ export function NotesPanel({
   onTakeDisk,
 }: NotesPanelProps) {
   const [mode, setMode] = useState<Mode>("edit");
+  const [dictationHintOpen, setDictationHintOpen] = useState(false);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const dictationHintId = useId();
   const clipFiles = useMemo(() => clips.map((clip) => clip.file), [clips]);
   // Clips are only read for the preview: the editor shows the markdown itself.
   const images = useClipImages(pdfPath, clipFiles, mode === "preview");
+  const editorDisabled = !loaded || conflict !== null;
+
+  function switchMode(next: Mode) {
+    setMode(next);
+    // The hint only makes sense next to the editor; switching away from it
+    // would otherwise leave a stale hint floating over the preview.
+    if (next === "preview") setDictationHintOpen(false);
+  }
+
+  function toggleDictationHint() {
+    if (dictationHintOpen) {
+      setDictationHintOpen(false);
+      return;
+    }
+    editorRef.current?.focus();
+    setDictationHintOpen(true);
+  }
 
   return (
     <div className="notes">
@@ -63,7 +89,7 @@ export function NotesPanel({
             type="button"
             className="notes__mode"
             aria-pressed={mode === "edit"}
-            onClick={() => setMode("edit")}
+            onClick={() => switchMode("edit")}
           >
             編集
           </button>
@@ -71,11 +97,23 @@ export function NotesPanel({
             type="button"
             className="notes__mode"
             aria-pressed={mode === "preview"}
-            onClick={() => setMode("preview")}
+            onClick={() => switchMode("preview")}
           >
             プレビュー
           </button>
         </div>
+        {mode === "edit" ? (
+          <button
+            type="button"
+            className="notes__dictation-toggle"
+            disabled={editorDisabled}
+            aria-expanded={dictationHintOpen}
+            aria-controls={dictationHintId}
+            onClick={toggleDictationHint}
+          >
+            音声入力
+          </button>
+        ) : null}
         <span
           className="notes__status"
           // Saving happens on its own; announce it without stealing focus.
@@ -115,17 +153,25 @@ export function NotesPanel({
       ) : null}
 
       {mode === "edit" ? (
-        <textarea
-          className="notes__editor"
-          aria-label="メモ (markdown)"
-          value={content}
-          // Refusing the keystroke outright would look like a frozen editor;
-          // the panel says why instead.
-          disabled={!loaded || conflict !== null}
-          placeholder="markdown でメモを書く。ハイライトの「メモに挿入」で引用が追記されます。"
-          spellCheck={false}
-          onChange={(event) => onChange(event.target.value)}
-        />
+        <>
+          {dictationHintOpen ? (
+            <p id={dictationHintId} className="notes__dictation-hint">
+              {dictationHint(detectDictationPlatform(globalThis.navigator))}
+            </p>
+          ) : null}
+          <textarea
+            ref={editorRef}
+            className="notes__editor"
+            aria-label="メモ (markdown)"
+            value={content}
+            // Refusing the keystroke outright would look like a frozen editor;
+            // the panel says why instead.
+            disabled={editorDisabled}
+            placeholder="markdown でメモを書く。ハイライトの「メモに挿入」で引用が追記されます。"
+            spellCheck={false}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </>
       ) : (
         <div className="notes__preview">
           {content.trim() === "" ? (
