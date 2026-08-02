@@ -231,10 +231,13 @@ describe("PdfViewer", () => {
     expect(renderedPages().length).toBeLessThanOrEqual(4);
   });
 
-  it("renders the pages it shows via the injected renderer", () => {
+  it("renders the pages it shows via the injected renderer", async () => {
     const { doc } = renderViewer();
 
-    expect(doc.renderPage).toHaveBeenCalled();
+    // The render now goes through `RenderQueue` (issue #35), which starts
+    // the first task a microtask after it is scheduled rather than
+    // synchronously within the mounting effect.
+    await waitFor(() => expect(doc.renderPage).toHaveBeenCalled());
     expect(vi.mocked(doc.renderPage).mock.calls[0][0]).toBe(1);
   });
 
@@ -552,6 +555,82 @@ describe("PdfViewer", () => {
       // land on the old document.
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(vi.mocked(docA.renderPage).mock.calls.length).toBe(countAtSwap);
+    });
+  });
+
+  describe("render priority (issue #35)", () => {
+    /** Only the pages this scenario controls — a background prefetch may
+     * also call `renderPage` for pages neither queued nor asserted on here,
+     * and those calls must not be mistaken for part of the sequence below. */
+    const TRACKED = [1, 2, 10, 11, 12];
+
+    it("hands a newly visible spread's page to the renderer before an overscan spread's page that was already queued ahead of it", async () => {
+      const doc = fakeDoc(20);
+      const order: number[] = [];
+      const gates = new Map<number, () => void>();
+      // Every render is held open until this test resolves it by hand — the
+      // fake stands in for pdf.js's worker being busy with something else,
+      // the situation `RenderQueue` exists to arbitrate.
+      vi.mocked(doc.renderPage).mockImplementation(
+        (pageNumber: number) =>
+          new Promise<void>((resolve) => {
+            order.push(pageNumber);
+            gates.set(pageNumber, resolve);
+          }),
+      );
+      const tracked = () => order.filter((page) => TRACKED.includes(page));
+      const resolvePage = (pageNumber: number) => {
+        const resolve = gates.get(pageNumber);
+        if (!resolve) {
+          throw new Error(`renderPage(${pageNumber}) was never called`);
+        }
+        resolve();
+      };
+
+      render(
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(20)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Page 1 (domIndex 0, visible) starts immediately — the queue was
+      // idle. Page 2 (domIndex 1, overscan) queues behind it.
+      await waitFor(() => expect(tracked()).toEqual([1]));
+      resolvePage(1);
+      // Page 2 now occupies the single slot, held open here to model a
+      // render still in flight — exactly what a reader flipping pages
+      // quickly leaves behind for the next spread to queue up against.
+      await waitFor(() => expect(tracked()).toEqual([1, 2]));
+
+      // A fast jump: spread index 10 becomes the strictly-visible one.
+      // domIndex 9 (page 10) and 11 (page 12) are the new overscan
+      // neighbours; domIndex 9's `PageCanvas` commits before domIndex 10's
+      // (ascending DOM order), so page 10 is queued — behind page 2, still
+      // running — *before page 11 (the actually-visible page) exists at all*.
+      const element = scroller();
+      element.scrollLeft = 1480; // 10 spreads × 148px (100px page + 2×24px padding)
+      fireEvent.scroll(element);
+      await flushScroll();
+      // Scheduling alone does not call `renderPage` yet — only page 2's own
+      // resolution, next, drains the queue far enough to reach it.
+      expect(tracked()).toEqual([1, 2]);
+
+      resolvePage(2);
+      // Page 11 is what the reader is actually looking at now. Despite page
+      // 10 having been queued first, priority must still put page 11 first.
+      await waitFor(() => expect(tracked()).toEqual([1, 2, 11]));
+
+      resolvePage(11);
+      await waitFor(() => expect(tracked()).toEqual([1, 2, 11, 10]));
+
+      resolvePage(10);
+      await waitFor(() => expect(tracked()).toEqual([1, 2, 11, 10, 12]));
+
+      resolvePage(12);
     });
   });
 

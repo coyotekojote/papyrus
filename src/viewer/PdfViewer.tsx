@@ -59,6 +59,7 @@ import {
   spreadContentWidth,
 } from "./layout";
 import { PageRenderCache } from "./page-cache";
+import { RenderQueue } from "./render-queue";
 import { defaultViewModeForScreen, useIsCompactScreen } from "./responsive";
 import {
   buildSpreads,
@@ -330,6 +331,15 @@ export function PdfViewer({
   const cacheRef = useRef<PageRenderCache | null>(null);
   cacheRef.current ??= new PageRenderCache();
   const cache = cacheRef.current;
+  /**
+   * One render queue for the document's whole lifetime (issue #35): a fresh
+   * instance per render would just let every `PageCanvas` mount straight
+   * through it again, defeating the point of serializing renders across
+   * them.
+   */
+  const renderQueueRef = useRef<RenderQueue | null>(null);
+  renderQueueRef.current ??= new RenderQueue();
+  const renderQueue = renderQueueRef.current;
 
   /** DOM index we scrolled to on purpose; scroll events ignore it until reached. */
   const pendingDomIndexRef = useRef<number | null>(null);
@@ -391,6 +401,18 @@ export function PdfViewer({
 
   const range = useMemo(
     () => visibleRange(layout, scrollLeft, viewportWidth, OVERSCAN),
+    [layout, scrollLeft, viewportWidth],
+  );
+  /**
+   * `range` widened by `OVERSCAN`; this is the same computation with no
+   * overscan at all, i.e. exactly the spread(s) actually on screen. The
+   * difference between the two is what separates render priority
+   * `"visible"` from `"overscan"` below (issue #35) — overscan pages still
+   * render synchronously, same as before, but never ahead of a spread the
+   * reader is actually looking at right now.
+   */
+  const strictRange = useMemo(
+    () => visibleRange(layout, scrollLeft, viewportWidth, 0),
     [layout, scrollLeft, viewportWidth],
   );
   // Destructured for the prefetch effect below: `range` is a fresh object on
@@ -1389,6 +1411,13 @@ export function PdfViewer({
           {domSpreads.map((spread, domIndex) => {
             const box = layout[domIndex];
             const visible = rangeIncludes(range, domIndex);
+            // Inside the strict (no-overscan) range: this spread is what the
+            // reader is actually looking at right now, so it outranks the
+            // overscan spreads either side of it for the renderer's
+            // attention (issue #35).
+            const priority = rangeIncludes(strictRange, domIndex)
+              ? "visible"
+              : "overscan";
             return (
               <div
                 className="spread"
@@ -1412,6 +1441,8 @@ export function PdfViewer({
                         height={size.height}
                         highlights={highlightsByPage.get(pageNumber)}
                         withTextLayer
+                        queue={renderQueue}
+                        priority={priority}
                       />
                     );
                   })

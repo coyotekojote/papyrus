@@ -3,6 +3,7 @@ import type { Highlight } from "../files/sidecar";
 import type { PdfDocumentHandle } from "../pdf";
 import { highlightColorCss } from "./highlights";
 import type { PageRenderCache } from "./page-cache";
+import type { RenderPriority, RenderQueue } from "./render-queue";
 
 interface PageCanvasProps {
   doc: PdfDocumentHandle;
@@ -16,6 +17,16 @@ interface PageCanvasProps {
   highlights?: readonly Highlight[];
   /** Also mounts the selectable text layer. Off for thumbnails. */
   withTextLayer?: boolean;
+  /**
+   * Routes this page's render through the given queue instead of calling
+   * `doc.renderPage` straight away (issue #35). Omitted by `ThumbnailList`,
+   * whose pages never compete with the main viewer for the worker's
+   * attention and so have no priority worth expressing.
+   */
+  queue?: RenderQueue;
+  /** Ignored without `queue`. Defaults to `"visible"`, the only sensible
+   * choice for a caller that passes a queue but no priority. */
+  priority?: RenderPriority;
 }
 
 /**
@@ -32,6 +43,8 @@ export function PageCanvas({
   height,
   highlights = [],
   withTextLayer = false,
+  queue,
+  priority = "visible",
 }: PageCanvasProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -54,19 +67,31 @@ export function PageCanvas({
     host.replaceChildren(canvas);
     setError(null);
 
-    doc
-      .renderPage(pageNumber, { scale, canvas, signal: controller.signal })
-      .then(() => {
-        if (controller.signal.aborted) return;
+    const render = (signal: AbortSignal) =>
+      doc.renderPage(pageNumber, { scale, canvas, signal }).then(() => {
+        if (signal.aborted) return;
         cache.set(pageNumber, scale, canvas);
-      })
-      .catch((cause: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
       });
 
+    // Without a queue (thumbnails, still) the render starts immediately, as
+    // before #35. With one, `priority` decides whether this page's turn at
+    // the (single-slot) worker comes before or after whatever else is
+    // queued — see render-queue.ts for why that matters.
+    const task = queue
+      ? queue.schedule(priority, render, controller.signal)
+      : render(controller.signal);
+
+    task.catch((cause: unknown) => {
+      if (controller.signal.aborted) return;
+      setError(cause instanceof Error ? cause.message : String(cause));
+    });
+
     return () => controller.abort();
-  }, [doc, cache, pageNumber, scale]);
+    // `priority` is intentionally a dependency: a change (an overscan page
+    // becoming the visible one, say) must abort whatever this effect queued
+    // last time and re-schedule at the new priority. The cache check above
+    // makes that a no-op — never a second render — once the page is warm.
+  }, [doc, cache, pageNumber, scale, queue, priority]);
 
   // The text layer is cheap relative to the canvas and never cached: it is
   // rebuilt whenever the page mounts or the zoom changes.
