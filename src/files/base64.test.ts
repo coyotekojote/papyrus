@@ -19,10 +19,13 @@ describe("blobToBase64", () => {
     expect(await blobToBase64(blob)).toBe("iVBORw0KGg==");
   });
 
-  it("encodes an empty blob as an empty string", async () => {
-    // readAsDataURL still yields "data:image/png;base64," here, so the empty
-    // payload is a genuine result rather than the failure below.
-    expect(await blobToBase64(new Blob([], { type: "image/png" }))).toBe("");
+  it("fails on an empty blob rather than write a zero-byte clip", async () => {
+    // readAsDataURL yields "data:image/png;base64," here — a well-formed data
+    // URL with nothing in it. Passing "" on would save an empty PNG and leave
+    // the note pointing at a broken image.
+    await expect(
+      blobToBase64(new Blob([], { type: "image/png" })),
+    ).rejects.toThrow("Failed to encode the image");
   });
 
   it("fails rather than hand back an empty payload it cannot vouch for", async () => {

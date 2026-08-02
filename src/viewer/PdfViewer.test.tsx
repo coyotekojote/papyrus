@@ -1132,6 +1132,21 @@ describe("PdfViewer", () => {
       expect(saveAnnotations).not.toHaveBeenCalled();
     });
 
+    it("refuses to cut while the note cannot take the image", async () => {
+      // Nothing in this build shows a clip other than the note, so cutting one
+      // that cannot be inserted would strand it on disk.
+      vi.mocked(loadNotes).mockRejectedValue(new Error("読めません"));
+      const { doc, page } = await startClipping();
+
+      await drag(page, { x: 10, y: 14 }, { x: 60, y: 84 });
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "メモをまだ読み込めていないため、切り取りできません",
+      );
+      expect(doc.renderRegion).not.toHaveBeenCalled();
+      expect(saveClip).not.toHaveBeenCalled();
+    });
+
     it("refuses to cut before the annotations have loaded", async () => {
       vi.mocked(loadAnnotations).mockRejectedValue(new Error("読めません"));
       const { doc, page } = await startClipping();

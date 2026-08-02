@@ -22,12 +22,15 @@ export function blobToBase64(blob: Blob): Promise<string> {
       // media type the caller already knows. A result without one is not a
       // data URL at all; resolving to "" there would write a 0-byte clip and
       // leave the note pointing at a broken image, so it fails instead.
+      // An empty payload is refused for the same reason: the only caller is
+      // saving a rendered page region, where zero bytes is never a picture.
       const comma = url.indexOf(",");
-      if (comma < 0) {
+      const payload = comma < 0 ? "" : url.slice(comma + 1);
+      if (payload === "") {
         reject(new Error("Failed to encode the image"));
         return;
       }
-      resolve(url.slice(comma + 1));
+      resolve(payload);
     };
     reader.readAsDataURL(blob);
   });

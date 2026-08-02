@@ -92,6 +92,23 @@ describe("useClipImages", () => {
     expect(result.current.has("clips/clip-0002.png")).toBe(false);
   });
 
+  it("frees a clip that is no longer in the document", async () => {
+    const both = ["clips/clip-0001.png", "clips/clip-0002.png"];
+    const { rerender, result } = renderHook(
+      ({ files }: { files: string[] }) =>
+        useClipImages("/Papers/paper.pdf", files, true),
+      { initialProps: { files: both } },
+    );
+
+    await waitFor(() => expect(result.current.size).toBe(2));
+    rerender({ files: ["clips/clip-0001.png"] });
+
+    expect(revoked).toEqual(["blob:clip-2"]);
+    expect(result.current.has("clips/clip-0002.png")).toBe(false);
+    // The one still referenced keeps the URL it already had.
+    expect(result.current.get("clips/clip-0001.png")).toBe("blob:clip-1");
+  });
+
   it("frees the URLs when the document changes", async () => {
     const files = ["clips/clip-0001.png"];
     const { rerender, result } = renderHook(

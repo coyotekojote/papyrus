@@ -180,7 +180,6 @@ export function PdfViewer({
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   /** The live drag, for the window listeners that must not re-register on move. */
   const dragRef = useRef<ClipDrag | null>(null);
-  dragRef.current = drag;
   /** Aborts an in-flight region render when the reader leaves the document. */
   const clipAbortRef = useRef<AbortController | null>(null);
   /** The latest `createClip`, for the same reason as `dragRef`. */
@@ -582,6 +581,21 @@ export function PdfViewer({
         );
         return;
       }
+      // A clip this build cannot put in the note is a clip the reader has no
+      // way back to: there is no clips panel, and nothing draws them on the
+      // page. Rather than cut a PNG nobody can reach, the whole thing waits
+      // until the note can take it — both states below resolve on their own.
+      if (!notes.loaded) {
+        setClipError("メモをまだ読み込めていないため、切り取りできません");
+        return;
+      }
+      if (notes.conflict !== null) {
+        setClipError(
+          "メモが競合しています。どちらを残すか選んでから切り取ってください",
+        );
+        setNotesOpen(true);
+        return;
+      }
       const controller = new AbortController();
       clipAbortRef.current?.abort();
       clipAbortRef.current = controller;
@@ -595,7 +609,11 @@ export function PdfViewer({
         // Checked before the write, not only after it: a drag the reader has
         // already replaced must not leave a PNG behind that nothing refers to.
         if (controller.signal.aborted) return;
-        const file = await saveClip(filePath, await blobToBase64(png));
+        // Encoding is another await the reader can walk away during, so the
+        // check is repeated on both sides of the write.
+        const encoded = await blobToBase64(png);
+        if (controller.signal.aborted) return;
+        const file = await saveClip(filePath, encoded);
         if (controller.signal.aborted) return;
         const clip = makeClip({ page, rect, file, createdAt: new Date() });
         annotations.addClip(clip);
@@ -613,7 +631,14 @@ export function PdfViewer({
     [annotations, appendToNotes, doc, filePath, notes],
   );
 
-  createClipRef.current = createClip;
+  // Written after the commit, not during the render. A render React throws
+  // away (an interrupted concurrent one) would otherwise leave these pointing
+  // at closures over state that never became the UI — and the pointer
+  // listeners below read them long after the render that produced them.
+  useEffect(() => {
+    createClipRef.current = createClip;
+    dragRef.current = drag;
+  });
 
   const beginClipDrag = useCallback((event: ReactPointerEvent) => {
     const pageElement = closestPage(
@@ -1003,7 +1028,9 @@ export function PdfViewer({
           />
         ) : null}
 
-        {clipMode || clipError ? (
+        {/* `clipping` is listed on its own: leaving the mode does not abort a
+            cut already under way, and the reader should still see it finish. */}
+        {clipMode || clipping || clipError ? (
           <p
             className={
               clipError ? "clip-notice clip-notice--error" : "clip-notice"

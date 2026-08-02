@@ -38,6 +38,23 @@ export function useClipImages(
   }, [pdfPath]);
 
   useEffect(() => {
+    // A clip that left annotations.json — deleted on another device, say —
+    // must stop being served here, or the preview keeps showing a figure the
+    // document no longer claims and its bytes are never freed.
+    const wanted = new Set(files);
+    const dropped = [...urlsRef.current.keys()].filter(
+      (file) => !wanted.has(file),
+    );
+    if (dropped.length > 0) {
+      const kept = new Map(urlsRef.current);
+      for (const file of dropped) {
+        URL.revokeObjectURL(kept.get(file) as string);
+        kept.delete(file);
+      }
+      urlsRef.current = kept;
+      setImages(kept);
+    }
+
     if (!enabled) return;
     const pending = files.filter((file) => !urlsRef.current.has(file));
     if (pending.length === 0) return;
