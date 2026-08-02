@@ -2,7 +2,13 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- maximum-scale=1, user-scalable=no: WKWebView honors this and drops its
+         native pinch-to-zoom, which would otherwise fight the viewer's own
+         two-finger pinch (src/viewer/touch-pinch.ts). -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
     <title>Papyrus</title>
   </head>
   <body>

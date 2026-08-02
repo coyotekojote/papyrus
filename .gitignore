@@ -8,7 +8,10 @@ dist-ssr/
 
 # Tauri
 src-tauri/target/
-src-tauri/gen/
+# Editor autocompletion schemas only; regenerated on every build. gen/apple is
+# tracked — see src-tauri/gen/apple/.gitignore for its own build-artifact
+# excludes (Tauri's own template ignores build/ there, not the whole tree).
+src-tauri/gen/schemas/
 
 # Editor
 .vscode/*
