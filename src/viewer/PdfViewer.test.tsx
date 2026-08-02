@@ -164,19 +164,28 @@ function renderViewer(
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
   const onOpenSettings = vi.fn();
-  render(
+  const view = (next: { binding?: Binding; viewMode?: ViewMode }) => (
     <PdfViewer
       doc={doc}
       pageSizes={pageSizes(pageCount)}
       filePath="/papers/paper.pdf"
       fileName="paper.pdf"
-      defaultBinding={defaults.binding}
-      defaultViewMode={defaults.viewMode}
+      defaultBinding={next.binding}
+      defaultViewMode={next.viewMode}
       onClose={onClose}
       onOpenSettings={onOpenSettings}
-    />,
+    />
   );
-  return { doc, onClose, onOpenSettings, user: userEvent.setup() };
+  const { rerender } = render(view(defaults));
+  return {
+    doc,
+    onClose,
+    onOpenSettings,
+    user: userEvent.setup(),
+    /** Stands in for the reader changing the settings mid-document. */
+    changeSettings: (next: { binding?: Binding; viewMode?: ViewMode }) =>
+      rerender(view(next)),
+  };
 }
 
 describe("PdfViewer", () => {
@@ -259,6 +268,28 @@ describe("PdfViewer", () => {
     expect(screen.getByRole("button", { name: "見開き" })).toBeInTheDocument();
     const [first, second] = firstRenderedPair();
     expect(first).toBeGreaterThan(second);
+  });
+
+  it("follows a settings change on the document already open", () => {
+    const { changeSettings } = renderViewer();
+
+    changeSettings({ binding: "right", viewMode: "spread" });
+
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "見開き" })).toBeInTheDocument();
+  });
+
+  it("keeps a toolbar override until the setting itself changes", async () => {
+    const { changeSettings, user } = renderViewer(PAGE_COUNT, [], {
+      binding: "left",
+    });
+
+    await user.click(screen.getByRole("button", { name: "左綴じ" }));
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+
+    // Re-rendering for an unrelated reason must not undo the reader's choice.
+    changeSettings({ binding: "left" });
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
   });
 
   it("opens the settings from the toolbar", async () => {

@@ -135,7 +135,8 @@ export function SettingsDialog({
           </label>
 
           <p className="settings__note">
-            開いている文書には反映されません。次に開いた文書から使われます。
+            開いている文書にもすぐ反映されます。ツールバーでの切り替えは、その
+            文書だけの一時的な変更です。
           </p>
         </section>
 

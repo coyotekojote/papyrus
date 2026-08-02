@@ -91,8 +91,9 @@ export interface PdfViewerProps {
   filePath: string;
   fileName: string;
   /**
-   * What this document opens as, from the app settings (issue #9). Only the
-   * starting point: both stay switchable from the toolbar, for this document.
+   * How documents are laid out, from the app settings (issue #9). A change
+   * applies to this document too; the toolbar overrides it until then, for
+   * this document only.
    */
   defaultBinding?: Binding;
   defaultViewMode?: ViewMode;
@@ -171,8 +172,8 @@ export function PdfViewer({
   onClose,
   onOpenSettings,
 }: PdfViewerProps) {
-  // Read once, when the document opens: changing the default later is about
-  // the next document, not the one being read.
+  // Where the document starts; the toolbar then overrides both for this
+  // document only. Changing the setting takes them back over (see below).
   const [viewMode, setViewMode] = useState<ViewMode>(defaultViewMode);
   const [binding, setBinding] = useState<Binding>(defaultBinding);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
@@ -195,6 +196,13 @@ export function PdfViewer({
   const [insertRefused, setInsertRefused] = useState(false);
   /** null until the outline has been fetched; the fetch happens on first open. */
   const [outline, setOutline] = useState<OutlineNode[] | null>(null);
+
+  // Changing the setting is a deliberate act on the app, so it lands on the
+  // document being read as well — waiting for the next one to open would look
+  // like the setting did nothing. Only a change moves these: the toolbar's own
+  // toggles stand until the reader touches the setting again.
+  useEffect(() => setBinding(defaultBinding), [defaultBinding]);
+  useEffect(() => setViewMode(defaultViewMode), [defaultViewMode]);
 
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
