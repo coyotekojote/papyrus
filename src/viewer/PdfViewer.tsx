@@ -117,6 +117,28 @@ interface ClipDrag {
   current: DragPoint;
 }
 
+/** Why the note cannot take a clip's image. */
+type NotesRefusal = "loading" | "conflict";
+
+/**
+ * What to tell the reader when the note cannot take the image. Which of the
+ * two applies depends on whether the clip itself made it to disk: before the
+ * write there is nothing to keep and the cut is simply declined, after it the
+ * clip is saved and only the markdown is missing. Saying "切り取ってください"
+ * once the file exists would send the reader to do it all again.
+ */
+const CLIP_DECLINED: Record<NotesRefusal, string> = {
+  loading: "メモをまだ読み込めていないため、切り取りできません",
+  conflict: "メモが競合しています。どちらを残すか選んでから切り取ってください",
+};
+
+const IMAGE_NOT_INSERTED: Record<NotesRefusal, string> = {
+  loading:
+    "切り取りは保存しました。ただしメモを読み込めていないため、画像を挿入できませんでした",
+  conflict:
+    "切り取りは保存しました。ただしメモが競合しているため、画像を挿入できませんでした",
+};
+
 /** The page element (carrying `data-page`) around a DOM node, if any. */
 function closestPage(node: Node | null): HTMLElement | null {
   const element =
@@ -571,6 +593,14 @@ export function PdfViewer({
     [appendToNotes, notes],
   );
 
+  /** Why the note cannot take an image right now, or null when it can. */
+  const notesRefusal = useCallback((): NotesRefusal | null => {
+    const { loaded, conflict } = notesStateRef.current;
+    if (!loaded) return "loading";
+    if (conflict !== null) return "conflict";
+    return null;
+  }, []);
+
   /**
    * Cuts the selected region out of the page: renders it well above screen
    * resolution, writes it into the sidecar's `clips/` folder, records it in
@@ -580,16 +610,6 @@ export function PdfViewer({
    * leaves at worst an orphaned PNG — never an annotations entry (or a note)
    * pointing at a picture that is not there.
    */
-  /** Why the note cannot take an image right now, or null when it can. */
-  const notesRefusal = useCallback((): string | null => {
-    const { loaded, conflict } = notesStateRef.current;
-    if (!loaded) return "メモをまだ読み込めていないため、切り取りできません";
-    if (conflict !== null) {
-      return "メモが競合しています。どちらを残すか選んでから切り取ってください";
-    }
-    return null;
-  }, []);
-
   const createClip = useCallback(
     async (page: number, rect: NormalizedRect) => {
       // The annotations hook drops mutations until the sidecar has loaded;
@@ -606,7 +626,7 @@ export function PdfViewer({
       // until the note can take it — both states resolve on their own.
       const refusedUpFront = notesRefusal();
       if (refusedUpFront) {
-        setClipError(refusedUpFront);
+        setClipError(CLIP_DECLINED[refusedUpFront]);
         setNotesOpen(true);
         return;
       }
@@ -632,7 +652,7 @@ export function PdfViewer({
         // clip that has become uninsertable costs no file at all.
         const refusedBeforeWrite = notesRefusal();
         if (refusedBeforeWrite) {
-          setClipError(refusedBeforeWrite);
+          setClipError(CLIP_DECLINED[refusedBeforeWrite]);
           setNotesOpen(true);
           return;
         }
@@ -646,7 +666,7 @@ export function PdfViewer({
         annotations.addClip(clip);
         const refusedAfterWrite = notesRefusal();
         if (refusedAfterWrite) {
-          setClipError(`${refusedAfterWrite}（切り取り自体は保存済みです）`);
+          setClipError(IMAGE_NOT_INSERTED[refusedAfterWrite]);
           setNotesOpen(true);
           return;
         }
