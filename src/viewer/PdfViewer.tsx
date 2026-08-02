@@ -101,6 +101,21 @@ const OVERSCAN = 1;
  */
 const PREFETCH_COUNT = 3;
 
+/**
+ * How long `strictRange` must sit still before an overscan-only spread is
+ * trusted with full `"overscan"` render priority again (issue #35's
+ * "検討" debounce). While the reader is mashing the page-turn key or
+ * flicking through spreads, `strictRange` moves on every turn — rendering
+ * each overscan neighbour along the way just spends the single-slot worker
+ * on pages the reader is not going to linger on. Dropping those renders to
+ * `"prefetch"` for this long after each move means they still happen (once
+ * the queue is otherwise idle), but never at the expense of whichever
+ * spread turns out to be the one the reader actually stops on.
+ * `"visible"` is untouched by this — the spread on screen always renders
+ * immediately, `strictRange` settled or not.
+ */
+export const OVERSCAN_SETTLE_MS = 150;
+
 /** Schedules `callback` for a moment the browser is otherwise idle, falling
  * back to a macrotask where `requestIdleCallback` does not exist (jsdom,
  * Safari as of this writing). */
@@ -420,6 +435,50 @@ export function PdfViewer({
   // directly would abort (and thus never finish) an in-flight prefetch on
   // every single scroll event's re-render.
   const { start: rangeStart, end: rangeEnd } = range;
+
+  /**
+   * Whether `strictRange` has sat still for `OVERSCAN_SETTLE_MS` (issue #35).
+   * Starts `true`: the document's own opening overscan neighbour must render
+   * at once, not wait out a debounce nothing has actually triggered yet.
+   */
+  const [overscanSettled, setOverscanSettled] = useState(true);
+  /**
+   * The `strictRange` bounds as of the last render, compared against the
+   * current ones *during* render rather than in a `useEffect`. An effect
+   * would only flip `overscanSettled` to `false` a render *after* the one
+   * that first mounts the new range's overscan neighbours — those would be
+   * scheduled at full `"overscan"` priority for that one render, self
+   * -correcting to `"prefetch"` only on the render right behind it. That is
+   * exactly the race this debounce exists to close, so the flip has to land
+   * in the very same render `strictRange` first moves — this is React's own
+   * endorsed pattern for adjusting state during rendering (calling `set…`
+   * conditionally, guarded on the previous value having actually changed,
+   * bails out and re-renders before committing anything the reader would see).
+   */
+  const [lastStrictRange, setLastStrictRange] = useState(strictRange);
+  if (
+    lastStrictRange.start !== strictRange.start ||
+    lastStrictRange.end !== strictRange.end
+  ) {
+    // The very first render seeds `lastStrictRange` with that same render's
+    // own `strictRange` (same object), so this branch cannot fire before an
+    // actual move — no separate "skip the first one" case needed.
+    setLastStrictRange(strictRange);
+    setOverscanSettled(false);
+  }
+  // Re-settles `OVERSCAN_SETTLE_MS` after the *last* such move. Starting a
+  // timer is a side effect in its own right, so — unlike the flip above —
+  // this part does belong in an effect; running one render behind costs
+  // nothing here, since nothing renders differently while merely waiting
+  // for the timer to land.
+  useEffect(() => {
+    if (overscanSettled) return;
+    const timer = window.setTimeout(
+      () => setOverscanSettled(true),
+      OVERSCAN_SETTLE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [overscanSettled, strictRange.start, strictRange.end]);
 
   /**
    * Warms the render cache for pages just outside the synchronously rendered
@@ -1431,10 +1490,16 @@ export function PdfViewer({
             // Inside the strict (no-overscan) range: this spread is what the
             // reader is actually looking at right now, so it outranks the
             // overscan spreads either side of it for the renderer's
-            // attention (issue #35).
+            // attention (issue #35). An overscan spread itself only gets
+            // full "overscan" priority once `strictRange` has sat still for
+            // a while — mid-burst, it is dropped to "prefetch" so a run of
+            // page turns cannot each leave a wake of renders competing with
+            // whichever spread the reader actually stops on.
             const priority = rangeIncludes(strictRange, domIndex)
               ? "visible"
-              : "overscan";
+              : overscanSettled
+                ? "overscan"
+                : "prefetch";
             return (
               <div
                 className="spread"

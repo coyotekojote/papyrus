@@ -20,7 +20,8 @@ import {
 import { SAVE_DEBOUNCE_MS } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { translate } from "../translation/translate";
-import { PdfViewer } from "./PdfViewer";
+import { OVERSCAN_SETTLE_MS, PdfViewer } from "./PdfViewer";
+import { RenderQueue } from "./render-queue";
 import type { Binding, ViewMode } from "./spreads";
 
 vi.mock("../files/sidecar", async (importActual) => {
@@ -689,6 +690,73 @@ describe("PdfViewer", () => {
       await waitFor(() => expect(order).toEqual([1, 2, 3]));
 
       resolvePage(3);
+    });
+
+    it("holds overscan spreads at prefetch priority while the range keeps moving, then promotes them once it settles", async () => {
+      const doc = fakeDoc(20);
+      // Never resolves: every render sits in (or behind) the queue for the
+      // whole test, so the settle transition's re-schedule is still
+      // observable — an already-cached page would short-circuit straight
+      // past `RenderQueue` on its next mount and never call `schedule` again.
+      vi.mocked(doc.renderPage).mockImplementation(
+        () => new Promise<void>(() => {}),
+      );
+      const scheduleSpy = vi.spyOn(RenderQueue.prototype, "schedule");
+
+      render(
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(20)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Page 1 (visible) and page 2 (overscan, domIndex 1) are both
+      // scheduled on mount. Nothing has "moved" yet, so page 2 gets full
+      // "overscan" priority straight away — the debounce must never delay
+      // the document's own opening overscan neighbour.
+      await waitFor(() =>
+        expect(
+          scheduleSpy.mock.calls.some((call) => call[0] === "overscan"),
+        ).toBe(true),
+      );
+      scheduleSpy.mockClear();
+
+      // A fast jump: spread index 10 becomes strictly visible.
+      const element = scroller();
+      element.scrollLeft = 1480; // 10 spreads × 148px (100px page + 2×24px padding)
+      fireEvent.scroll(element);
+      await flushScroll();
+
+      // domIndex 9 (page 10) and domIndex 11 (page 12) — the new overscan
+      // neighbours — must be scheduled at "prefetch" while the debounce
+      // holds, never at "overscan", even though domIndex 10 (page 11, the
+      // new visible spread) is scheduled at "visible" as always.
+      await waitFor(() =>
+        expect(
+          scheduleSpy.mock.calls.some((call) => call[0] === "visible"),
+        ).toBe(true),
+      );
+      expect(
+        scheduleSpy.mock.calls.some((call) => call[0] === "overscan"),
+      ).toBe(false);
+
+      scheduleSpy.mockClear();
+
+      // Once the range has sat still for OVERSCAN_SETTLE_MS with no further
+      // movement, the same two overscan spreads are re-scheduled at full
+      // "overscan" priority — the debounce lifting on its own, not a scroll.
+      await waitFor(
+        () =>
+          expect(
+            scheduleSpy.mock.calls.some((call) => call[0] === "overscan"),
+          ).toBe(true),
+        { timeout: OVERSCAN_SETTLE_MS + 1000 },
+      );
+
+      scheduleSpy.mockRestore();
     });
   });
 
