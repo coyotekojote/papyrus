@@ -21,6 +21,12 @@ export interface TranslationSettings {
   provider: TranslationProviderId;
   /** BCP-47 tag translations are asked for, e.g. `ja`. */
   targetLanguage: string;
+  /**
+   * Model id per provider. Kept per provider rather than as one field so
+   * switching provider and back does not lose the choice; a provider with no
+   * entry uses whatever default the translation layer (issue #10) picks.
+   */
+  models: Partial<Record<TranslationProviderId, string>>;
 }
 
 export interface Settings {
@@ -31,11 +37,29 @@ export interface Settings {
   translation: TranslationSettings;
 }
 
+export interface ModelSuggestion {
+  id: string;
+  label: string;
+}
+
 export interface TranslationProviderInfo {
   id: TranslationProviderId;
   label: string;
   /** Where the reader gets a key, shown next to the input. */
   keyHint: string;
+  /**
+   * Models offered as a shortcut. Any id is still accepted — providers ship
+   * models faster than this app does — so the list is a convenience, not a
+   * limit. Empty for a provider whose model ids this build cannot state with
+   * confidence: a wrong id would only fail later, at translation time.
+   */
+  models: readonly ModelSuggestion[];
+  /**
+   * False for a provider that translates with one engine and takes no model.
+   * The field is shown but disabled, rather than hidden, so the reason is
+   * visible where the reader looks for it.
+   */
+  selectableModel: boolean;
 }
 
 export const TRANSLATION_PROVIDERS: readonly TranslationProviderInfo[] = [
@@ -43,18 +67,39 @@ export const TRANSLATION_PROVIDERS: readonly TranslationProviderInfo[] = [
     id: "claude",
     label: "Claude",
     keyHint: "console.anthropic.com で発行したキー",
+    models: [
+      { id: "claude-opus-5", label: "Claude Opus 5（最高品質）" },
+      {
+        id: "claude-sonnet-5",
+        label: "Claude Sonnet 5（速度と品質のバランス）",
+      },
+      { id: "claude-haiku-4-5", label: "Claude Haiku 4.5（高速・低コスト）" },
+    ],
+    selectableModel: true,
   },
   {
     id: "openai",
     label: "OpenAI",
     keyHint: "platform.openai.com で発行したキー",
+    models: [],
+    selectableModel: true,
   },
   {
     id: "deepl",
     label: "DeepL",
     keyHint: "DeepL API の認証キー",
+    models: [],
+    selectableModel: false,
   },
 ];
+
+export function providerInfo(
+  id: TranslationProviderId,
+): TranslationProviderInfo {
+  const info = TRANSLATION_PROVIDERS.find((provider) => provider.id === id);
+  if (!info) throw new Error(`unknown translation provider: ${id}`);
+  return info;
+}
 
 export interface TargetLanguage {
   tag: string;
@@ -76,8 +121,35 @@ export function defaultSettings(): Settings {
     version: SETTINGS_VERSION,
     defaultBinding: "left",
     defaultViewMode: "single",
-    translation: { provider: "claude", targetLanguage: "ja" },
+    translation: { provider: "claude", targetLanguage: "ja", models: {} },
   };
+}
+
+/** The model chosen for a provider, or null when it uses the provider's own. */
+export function modelFor(
+  settings: Settings,
+  provider: TranslationProviderId,
+): string | null {
+  return settings.translation.models[provider] ?? null;
+}
+
+/**
+ * Sets (or, with an empty id, clears) the model for one provider.
+ *
+ * Whitespace is dropped rather than kept: no model id contains any, the
+ * backend refuses one that does, and a space accepted here would come back
+ * from the save silently discarded.
+ */
+export function withModel(
+  settings: Settings,
+  provider: TranslationProviderId,
+  model: string,
+): Settings {
+  const models = { ...settings.translation.models };
+  const id = model.replace(/\s+/g, "");
+  if (id === "") delete models[provider];
+  else models[provider] = id;
+  return { ...settings, translation: { ...settings.translation, models } };
 }
 
 function oneOf<T extends string>(
@@ -92,6 +164,20 @@ function field(value: unknown, key: string): unknown {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)[key]
     : undefined;
+}
+
+/** Keeps the entries naming a known provider with a usable model id. */
+function normalizeModels(
+  value: unknown,
+): Partial<Record<TranslationProviderId, string>> {
+  const models: Partial<Record<TranslationProviderId, string>> = {};
+  for (const provider of TRANSLATION_PROVIDERS) {
+    const model = field(value, provider.id);
+    if (typeof model === "string" && model.trim() !== "") {
+      models[provider.id] = model.trim();
+    }
+  }
+  return models;
 }
 
 /**
@@ -128,6 +214,7 @@ export function normalizeSettings(value: unknown): Settings {
         typeof targetLanguage === "string" && targetLanguage.trim() !== ""
           ? targetLanguage.trim()
           : defaults.translation.targetLanguage,
+      models: normalizeModels(field(translation, "models")),
     },
   };
 }

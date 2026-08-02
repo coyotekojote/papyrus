@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -46,6 +47,30 @@ async function renderDialog(settings: Settings = defaultSettings()) {
     );
   });
   return { onChange, onClose, user: userEvent.setup() };
+}
+
+/**
+ * Renders with the reported changes fed back in, as the app does. Needed for
+ * anything typed: the dialog is controlled, so a spy that swallows the change
+ * leaves the field showing the last keystroke alone.
+ */
+async function renderLiveDialog(initial: Settings = defaultSettings()) {
+  function LiveDialog() {
+    const [settings, setSettings] = useState(initial);
+    return (
+      <SettingsDialog
+        settings={settings}
+        loaded
+        error={null}
+        onChange={(change) => setSettings(change)}
+        onClose={() => {}}
+      />
+    );
+  }
+  await act(async () => {
+    render(<LiveDialog />);
+  });
+  return userEvent.setup();
 }
 
 /** The settings the dialog would have produced from a change it reported. */
@@ -117,12 +142,107 @@ describe("SettingsDialog", () => {
   it("offers a language tag that was set by hand outside the app", async () => {
     await renderDialog({
       ...defaultSettings(),
-      translation: { provider: "claude", targetLanguage: "pt-BR" },
+      translation: { provider: "claude", targetLanguage: "pt-BR", models: {} },
     });
 
     expect(screen.getByRole("combobox", { name: "翻訳先の言語" })).toHaveValue(
       "pt-BR",
     );
+  });
+
+  it("shows the model of the selected provider, empty when none is set", async () => {
+    await renderDialog({
+      ...defaultSettings(),
+      translation: {
+        provider: "claude",
+        targetLanguage: "ja",
+        models: { claude: "claude-opus-5", openai: "some-model" },
+      },
+    });
+
+    expect(
+      screen.getByRole("combobox", { name: "モデル（Claude）" }),
+    ).toHaveValue("claude-opus-5");
+  });
+
+  it("keeps a model per provider as the reader switches between them", async () => {
+    // Driven through real state: typing is per-keystroke, so a spy that never
+    // feeds the change back would only ever see the last character.
+    const user = await renderLiveDialog({
+      ...defaultSettings(),
+      translation: {
+        provider: "claude",
+        targetLanguage: "ja",
+        models: { openai: "some-model" },
+      },
+    });
+
+    await user.type(
+      screen.getByRole("combobox", { name: "モデル（Claude）" }),
+      "claude-sonnet-5",
+    );
+    expect(
+      screen.getByRole("combobox", { name: "モデル（Claude）" }),
+    ).toHaveValue("claude-sonnet-5");
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "プロバイダ" }),
+      "openai",
+    );
+    // The other provider's model is still there, and Claude's survives the
+    // round trip back.
+    expect(
+      screen.getByRole("combobox", { name: "モデル（OpenAI）" }),
+    ).toHaveValue("some-model");
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "プロバイダ" }),
+      "claude",
+    );
+    expect(
+      screen.getByRole("combobox", { name: "モデル（Claude）" }),
+    ).toHaveValue("claude-sonnet-5");
+  });
+
+  it("clears the model when the field is emptied", async () => {
+    const user = await renderLiveDialog({
+      ...defaultSettings(),
+      translation: {
+        provider: "claude",
+        targetLanguage: "ja",
+        models: { claude: "claude-opus-5" },
+      },
+    });
+
+    await user.clear(
+      screen.getByRole("combobox", { name: "モデル（Claude）" }),
+    );
+
+    expect(
+      screen.getByRole("combobox", { name: "モデル（Claude）" }),
+    ).toHaveValue("");
+  });
+
+  it("offers the known Claude models as suggestions", async () => {
+    await renderDialog();
+
+    const suggestions = Array.from(
+      document.querySelectorAll("datalist#models-claude option"),
+    ).map((option) => option.getAttribute("value"));
+    expect(suggestions).toContain("claude-opus-5");
+    expect(suggestions).toContain("claude-sonnet-5");
+  });
+
+  it("disables the model field for a provider that takes no model", async () => {
+    await renderDialog({
+      ...defaultSettings(),
+      translation: { provider: "deepl", targetLanguage: "ja", models: {} },
+    });
+
+    expect(
+      screen.getByRole("combobox", { name: "モデル（DeepL）" }),
+    ).toBeDisabled();
+    expect(screen.getByText("DeepL はモデルを選べません。")).toBeVisible();
   });
 
   it("says which providers already have a key", async () => {

@@ -8,6 +8,7 @@
 //! API keys are deliberately *not* here — a settings file is plain text on
 //! disk. They go in the OS keychain instead; see `keychain.rs`.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,10 @@ const SETTINGS_FILE: &str = "settings.json";
 
 /// Longest language tag accepted, which is what BCP-47 allows for one.
 const MAX_LANGUAGE_TAG_LEN: usize = 35;
+
+/// Longest model id accepted. Real ones are far shorter; this only keeps a
+/// pasted paragraph out of the file.
+const MAX_MODEL_ID_LEN: usize = 100;
 
 #[derive(Debug, Serialize)]
 #[serde(
@@ -82,6 +87,14 @@ pub enum TranslationProvider {
     Deepl,
 }
 
+/// Every provider this build knows, in the order the settings screen lists
+/// them. The keychain (`keychain.rs`) matches API keys against this same list.
+pub const PROVIDERS: [TranslationProvider; 3] = [
+    TranslationProvider::Claude,
+    TranslationProvider::Openai,
+    TranslationProvider::Deepl,
+];
+
 impl TranslationProvider {
     /// The id this provider is known by in the keychain and over the IPC
     /// boundary — the same string serde reads and writes.
@@ -92,6 +105,13 @@ impl TranslationProvider {
             TranslationProvider::Deepl => "deepl",
         }
     }
+
+    /// The provider an id names, or None. Ids arrive from the frontend and
+    /// from a hand-edited settings file, so they are matched rather than
+    /// trusted.
+    pub fn from_id(id: &str) -> Option<Self> {
+        PROVIDERS.into_iter().find(|provider| provider.id() == id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +120,12 @@ pub struct TranslationSettings {
     pub provider: TranslationProvider,
     /// BCP-47 tag the reader wants translations in, e.g. `ja`.
     pub target_language: String,
+    /// Model id per provider, e.g. `{"claude": "claude-opus-5"}`. Kept per
+    /// provider rather than as one field so switching provider and back does
+    /// not lose the choice. A provider with no entry uses whatever default the
+    /// translation layer (issue #10) picks for it.
+    #[serde(default)]
+    pub models: BTreeMap<String, String>,
 }
 
 impl Default for TranslationSettings {
@@ -107,6 +133,7 @@ impl Default for TranslationSettings {
         TranslationSettings {
             provider: TranslationProvider::default(),
             target_language: "ja".to_string(),
+            models: BTreeMap::new(),
         }
     }
 }
@@ -153,6 +180,29 @@ fn language_tag(raw: &str) -> Option<String> {
     Some(tag.to_string())
 }
 
+/// A model id worth storing: trimmed, non-empty, not absurdly long, and free
+/// of inner whitespace. No model id has a space in it, so one that does is a
+/// mis-paste — and it would fail at request time, far from where it was typed.
+fn model_id(raw: &str) -> Option<String> {
+    let id = raw.trim();
+    if id.is_empty() || id.len() > MAX_MODEL_ID_LEN || id.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+/// Keeps the entries that name a provider this build knows and carry a usable
+/// model id; drops the rest. Also what an absent entry means: no model chosen.
+fn models(entries: impl IntoIterator<Item = (String, String)>) -> BTreeMap<String, String> {
+    entries
+        .into_iter()
+        .filter_map(|(provider, id)| {
+            let provider = TranslationProvider::from_id(&provider)?;
+            Some((provider.id().to_string(), model_id(&id)?))
+        })
+        .collect()
+}
+
 /// Reads `settings.json`, falling back per field rather than as a whole.
 ///
 /// The file is hand-editable and outlives app upgrades, so a single bad value
@@ -177,6 +227,10 @@ pub fn parse_settings(raw: &str) -> Settings {
                 .as_deref()
                 .and_then(language_tag)
                 .unwrap_or(defaults.translation.target_language),
+            models: models(
+                parsed::<BTreeMap<String, String>>(value_at(translation, "models"))
+                    .unwrap_or_default(),
+            ),
         },
     }
 }
@@ -194,6 +248,7 @@ pub fn normalize(settings: &Settings) -> Settings {
             provider: settings.translation.provider,
             target_language: language_tag(&settings.translation.target_language)
                 .unwrap_or(defaults.translation.target_language),
+            models: models(settings.translation.models.clone()),
         },
     }
 }
@@ -281,6 +336,7 @@ mod tests {
             translation: TranslationSettings {
                 provider: TranslationProvider::Deepl,
                 target_language: "en-US".to_string(),
+                models: BTreeMap::from([("claude".to_string(), "claude-opus-5".to_string())]),
             },
         }
     }
@@ -293,6 +349,75 @@ mod tests {
         assert_eq!(settings.default_view_mode, ViewMode::Single);
         assert_eq!(settings.translation.provider, TranslationProvider::Claude);
         assert_eq!(settings.translation.target_language, "ja");
+        // No model chosen: the translation layer picks the provider's own.
+        assert!(settings.translation.models.is_empty());
+    }
+
+    #[test]
+    fn parse_keeps_a_model_per_provider() {
+        let settings = parse_settings(
+            r#"{
+                "translation": {
+                    "models": {
+                        "claude": "  claude-opus-5  ",
+                        "openai": "some-model"
+                    }
+                }
+            }"#,
+        );
+
+        assert_eq!(
+            settings.translation.models,
+            BTreeMap::from([
+                ("claude".to_string(), "claude-opus-5".to_string()),
+                ("openai".to_string(), "some-model".to_string()),
+            ]),
+        );
+    }
+
+    #[test]
+    fn parse_drops_unusable_model_entries_and_keeps_the_rest() {
+        let too_long = "m".repeat(MAX_MODEL_ID_LEN + 1);
+        let settings = parse_settings(&format!(
+            r#"{{
+                "translation": {{
+                    "models": {{
+                        "claude": "claude-sonnet-5",
+                        "gemini": "gemini-pro",
+                        "openai": "   ",
+                        "deepl": "{too_long}"
+                    }}
+                }}
+            }}"#,
+        ));
+
+        assert_eq!(
+            settings.translation.models,
+            BTreeMap::from([("claude".to_string(), "claude-sonnet-5".to_string())]),
+            "unknown provider, blank and over-long ids are all dropped",
+        );
+    }
+
+    #[test]
+    fn parse_drops_a_model_id_with_inner_whitespace() {
+        // A mis-paste that would only fail later, at request time.
+        let settings =
+            parse_settings(r#"{ "translation": { "models": { "claude": "claude opus 5" } } }"#);
+
+        assert!(settings.translation.models.is_empty());
+    }
+
+    #[test]
+    fn parse_survives_a_models_field_that_is_not_an_object() {
+        for raw in [
+            r#"{ "translation": { "models": "claude-opus-5" } }"#,
+            r#"{ "translation": { "models": ["claude-opus-5"] } }"#,
+            r#"{ "translation": { "models": { "claude": 5 } } }"#,
+        ] {
+            let settings = parse_settings(raw);
+            assert!(settings.translation.models.is_empty(), "raw: {raw}");
+            assert_eq!(settings.translation.target_language, "ja");
+        }
     }
 
     #[test]
@@ -380,6 +505,10 @@ mod tests {
             version: 99,
             translation: TranslationSettings {
                 target_language: "  fr  ".to_string(),
+                models: BTreeMap::from([
+                    ("claude".to_string(), " claude-opus-5 ".to_string()),
+                    ("gemini".to_string(), "gemini-pro".to_string()),
+                ]),
                 ..TranslationSettings::default()
             },
             ..sample()
@@ -389,6 +518,10 @@ mod tests {
 
         assert_eq!(stored.version, SETTINGS_VERSION);
         assert_eq!(stored.translation.target_language, "fr");
+        assert_eq!(
+            stored.translation.models,
+            BTreeMap::from([("claude".to_string(), "claude-opus-5".to_string())]),
+        );
         assert_eq!(load_settings_from(&path).unwrap(), stored);
     }
 

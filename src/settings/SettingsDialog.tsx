@@ -3,6 +3,9 @@ import { useApiKeys } from "./use-api-keys";
 import {
   TARGET_LANGUAGES,
   TRANSLATION_PROVIDERS,
+  modelFor,
+  providerInfo,
+  withModel,
   type Settings,
   type TranslationProviderId,
 } from "./settings";
@@ -34,6 +37,8 @@ export function SettingsDialog({
     Partial<Record<TranslationProviderId, string>>
   >({});
   const dialogRef = useRef<HTMLDivElement>(null);
+  /** The provider the model field belongs to: whichever is selected. */
+  const currentProvider = providerInfo(settings.translation.provider);
 
   // Focus moves into the dialog so Escape and the tab order belong to it —
   // and so the viewer's page-turn shortcuts are not what the keyboard hits.
@@ -201,6 +206,48 @@ export function SettingsDialog({
               ))}
             </select>
           </label>
+
+          {/* Free text with suggestions rather than a closed list: providers
+              ship models faster than this app does, and a build that only
+              offered the ones it knew would go stale into unusable. */}
+          <label className="settings__row">
+            <span className="settings__label">
+              モデル（{currentProvider.label}）
+            </span>
+            <input
+              className="settings__control"
+              type="text"
+              list={`models-${currentProvider.id}`}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={
+                currentProvider.selectableModel
+                  ? "既定のモデル"
+                  : "選択できません"
+              }
+              disabled={!loaded || !currentProvider.selectableModel}
+              value={modelFor(settings, currentProvider.id) ?? ""}
+              onChange={(event) => {
+                const model = event.target.value;
+                onChange((current) =>
+                  withModel(current, currentProvider.id, model),
+                );
+              }}
+            />
+          </label>
+          {/* Outside the label on purpose: its options are part of a label's
+              text content, and would end up in the field's accessible name. */}
+          <datalist id={`models-${currentProvider.id}`}>
+            {currentProvider.models.map((model) => (
+              <option key={model.id} value={model.id} label={model.label} />
+            ))}
+          </datalist>
+
+          <p className="settings__note">
+            {currentProvider.selectableModel
+              ? "空欄にすると、プロバイダごとの既定モデルを使います。モデルはプロバイダごとに覚えます。"
+              : `${currentProvider.label} はモデルを選べません。`}
+          </p>
         </section>
 
         <section className="settings__section" aria-labelledby="settings-keys">

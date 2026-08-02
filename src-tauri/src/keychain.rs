@@ -13,18 +13,11 @@
 
 use serde::Serialize;
 
-use crate::settings::TranslationProvider;
+use crate::settings::{TranslationProvider, PROVIDERS};
 
 /// Keychain service name, shared by every provider entry. Matches the bundle
 /// identifier so the entries are recognizable in Keychain Access.
 const SERVICE: &str = "com.coyotekojote.papyrus";
-
-/// Providers a key can be stored for; the account name of each entry is the id.
-const PROVIDERS: [TranslationProvider; 3] = [
-    TranslationProvider::Claude,
-    TranslationProvider::Openai,
-    TranslationProvider::Deepl,
-];
 
 #[derive(Debug, Serialize)]
 #[serde(
@@ -87,10 +80,37 @@ impl KeyStore for OsKeychain {
         }
     }
 
+    /// Asks the keychain for the entry's *attributes*, never its data.
+    ///
+    /// Reading a key's value is what makes macOS put an "allow access?" prompt
+    /// in front of the app, and it re-asks whenever the binary's signature
+    /// changes — which, for a development build, is every rebuild. Answering
+    /// "is a key set?" needs none of that: a search that does not ask for the
+    /// data is not access to the secret, and never prompts.
+    #[cfg(target_vendor = "apple")]
     fn contains(&self, provider: TranslationProvider) -> Result<bool> {
-        // The password is read and dropped: the platforms disagree on how (or
-        // whether) presence can be checked without it, and it never leaves
-        // this function.
+        use security_framework::item::{ItemClass, ItemSearchOptions};
+        use security_framework_sys::base::errSecItemNotFound;
+
+        let found = ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(SERVICE)
+            .account(provider.id())
+            .load_attributes(true)
+            .search();
+        match found {
+            Ok(results) => Ok(!results.is_empty()),
+            Err(err) if err.code() == errSecItemNotFound => Ok(false),
+            Err(err) => Err(KeychainError::Keychain {
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    /// Elsewhere the password is read and dropped: those platforms either do
+    /// not gate reads behind a prompt, or offer no cheaper presence check.
+    #[cfg(not(target_vendor = "apple"))]
+    fn contains(&self, provider: TranslationProvider) -> Result<bool> {
         match Self::entry(provider)?.get_password() {
             Ok(_) => Ok(true),
             Err(keyring::Error::NoEntry) => Ok(false),
@@ -102,12 +122,9 @@ impl KeyStore for OsKeychain {
 /// The provider an id names, or `UnknownProvider`. Ids arrive from the
 /// frontend, so they are matched against the list rather than trusted.
 fn provider_from_id(id: &str) -> Result<TranslationProvider> {
-    PROVIDERS
-        .into_iter()
-        .find(|provider| provider.id() == id)
-        .ok_or_else(|| KeychainError::UnknownProvider {
-            provider: id.to_string(),
-        })
+    TranslationProvider::from_id(id).ok_or_else(|| KeychainError::UnknownProvider {
+        provider: id.to_string(),
+    })
 }
 
 pub fn save_api_key_in(store: &dyn KeyStore, provider_id: &str, key: &str) -> Result<()> {

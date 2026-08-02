@@ -20,12 +20,19 @@ keyring = { version = "3", features = [
   "windows-native",
   "sync-secret-service",
 ] }
-tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-fs = "2.5.1"
 tempfile = "3"
+
+# Already in the tree via keyring. Used only to ask whether a key exists
+# without reading it, which is what keeps the settings screen from putting a
+# keychain prompt in front of the reader — see keychain.rs.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+security-framework = "3"
+security-framework-sys = "2"
 
 [profile.release]
 panic = "abort"
