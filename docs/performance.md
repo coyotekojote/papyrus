@@ -170,3 +170,73 @@ dev 計測（上記 `src/perf/marks.ts` のマーク）で `pdfjs:first-render-p
   無いため見送った。ズームのたびに再構築している現状のままで、体感の悪化が報告されたら
   再検討する
 - Rust 側のストリーミング読み込み
+
+## Issue #35: 高速ページめくり直後の描画遅延の軽減
+
+### 症状
+
+ページ送りキーやホイールでの連打を止めた直後、そのとき画面にあるべきスプレッドがしばらく
+白いままになることがある。恒久的に白いまま戻らないバグ（キャッシュ evict によるもの）は
+PR #34 の 79ce4ce で別途修正済み — こちらはあくまで「いずれ描画はされるが、その描画が
+遅れる」という体感速度の問題。
+
+### 原因
+
+- pdf.js の worker は直列処理で、`renderPage`（`src/pdf/pdfjs-renderer.ts`）は呼ばれた順に
+  `page.render()` へ投げるだけ。アプリ側から「今どのページを優先して描画するか」を割り込ませる
+  手段がなかった
+- 連打中は可視 range が毎回動き、`PageCanvas` の mount → `renderPage` 開始 → 次の range で
+  unmount → abort、が短時間に大量に積まれる。abort は `RenderTask.cancel()` に伝わるが、
+  すでに worker に届いてしまった仕事の「順番」自体は変えられない
+- 見開き表示 + `OVERSCAN = 1` では、画面上のスプレッドとその両隣のオーバースキャン分
+  （最大3スプレッド×2ページ=6ページ）が同じ優先度で worker を取り合う。連打を止めた瞬間に
+  見えているはずのスプレッドが、直前に通り過ぎたスプレッドの描画待ちの後ろに並んでしまう
+  ことがあった
+
+### 方式
+
+新規モジュール `src/viewer/render-queue.ts` の `RenderQueue` を、アプリ側の描画スケジューラ
+として `renderPage` 呼び出しの手前に挟んだ。
+
+- 優先度3段階（`"visible"` > `"overscan"` > `"prefetch"`）・同時実行数1。pdf.js の worker
+  自体は直列なので、アプリ側で1本に絞ることで「後から来た visible が先に worker に届く」
+  余地を作る
+- `schedule(priority, run, signal)` は、開始前に `signal` が abort されたらキューから除去し
+  `run` を一切呼ばない（連打時の主な勝ち筋 — 通り過ぎた中間ページの描画が worker に届く前に
+  消える）。実行中の abort は `run` に渡した `signal` 経由で `RenderTask.cancel()` に伝播する。
+  同一優先度内は FIFO で、高優先度は常に先に dequeue される
+- `PdfViewer`（`src/viewer/PdfViewer.tsx`）は overscan 込みの `range` に加え、overscan なしの
+  `strictRange` を計算する。spread が `strictRange` 内なら `"visible"`、`range` 内で
+  `strictRange` 外なら `"overscan"` を `PageCanvas` に渡す（ただし後述のデバウンス中は
+  `"overscan"` の代わりに `"prefetch"` になる — 3値の分岐であることに注意）。`RenderQueue` は
+  ドキュメントの寿命ぶん `useRef` で1個だけ保持する
+- `PageCanvas`（`src/viewer/PageCanvas.tsx`）は `queue`/`priority` を optional props として
+  受け取り、未指定なら従来どおり即座に `doc.renderPage`（`ThumbnailList` は変更していない）。
+  キャッシュヒットは `RenderQueue` を経由せず、従来どおり即座に DOM へ再アタッチする
+- プリフェッチ経路（`PREFETCH_COUNT` 分の先読み、issue #12）の `doc.renderPage` 呼び出しも
+  `RenderQueue` の `"prefetch"` 優先度に統合した。`requestIdleCallback` ベースの「アイドル
+  1回につき1ページ」というペーシングは維持したまま、可視・overscan より優先度を下げる
+- 連打中のデバウンス（`OVERSCAN_SETTLE_MS = 150`）: `strictRange` が動いてから150msの間は、
+  overscan スプレッドの優先度を `"overscan"` ではなく `"prefetch"` まで落とす。`visible` の
+  描画開始は一切遅らせない。`PageCanvas` のマウント自体は従来どおり即座に行う設計（`queue`/
+  `priority` の切り替えのみで対応する案）にしたため、すでにキャッシュ済みのページの再表示は
+  影響を受けない。150ms 経過後に優先度が `"overscan"` へ戻ると、その時点でまだキュー内に
+  残っていた overscan の描画は abort → 再スケジュールされる（すでに描画が始まっていれば
+  最大150ms分やり直しになりうる）。ただし重いPDFでは visible 自体の描画に150ms以上かかる
+  ことが多く、overscan はその間にキュー内で自然に `"overscan"` へ昇格しているため、実害は
+  ほぼないと判断した
+
+### 確認方法
+
+`npm run bench`（Node上で `getDocument`/`getPage`/`getViewport` のみを測る）はラスタ描画
+（`renderPage`）自体を計測しないため、このIssueの検証には使えない。dev ビルドで確認する。
+
+```bash
+npm run dev
+```
+
+ページ数が多く1ページの描画に時間がかかる重いPDF（スキャン系・高解像度画像を含むもの）を
+開き、矢印キーやページ送りボタンを連打してから止め、止めた瞬間のスプレッドが表示されるまでの
+体感を見る。あわせて DevTools コンソールに出る `[perf] pdfjs:first-render-page: <ms>` など
+`src/perf/marks.ts` 経由のマーク（「計測方法」節参照）で、連打を止めた直後に実際に描画された
+ページのタイミングを確認する。

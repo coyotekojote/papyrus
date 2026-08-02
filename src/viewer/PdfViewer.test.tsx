@@ -20,7 +20,8 @@ import {
 import { SAVE_DEBOUNCE_MS } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { translate } from "../translation/translate";
-import { PdfViewer } from "./PdfViewer";
+import { OVERSCAN_SETTLE_MS, PdfViewer } from "./PdfViewer";
+import { RenderQueue } from "./render-queue";
 import type { Binding, ViewMode } from "./spreads";
 
 vi.mock("../files/sidecar", async (importActual) => {
@@ -246,10 +247,13 @@ describe("PdfViewer", () => {
     expect(renderedPages().length).toBeLessThanOrEqual(4);
   });
 
-  it("renders the pages it shows via the injected renderer", () => {
+  it("renders the pages it shows via the injected renderer", async () => {
     const { doc } = renderViewer();
 
-    expect(doc.renderPage).toHaveBeenCalled();
+    // The render now goes through `RenderQueue` (issue #35), which starts
+    // the first task a microtask after it is scheduled rather than
+    // synchronously within the mounting effect.
+    await waitFor(() => expect(doc.renderPage).toHaveBeenCalled());
     expect(vi.mocked(doc.renderPage).mock.calls[0][0]).toBe(1);
   });
 
@@ -585,6 +589,231 @@ describe("PdfViewer", () => {
       // land on the old document.
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(vi.mocked(docA.renderPage).mock.calls.length).toBe(countAtSwap);
+    });
+  });
+
+  describe("render priority (issue #35)", () => {
+    /** Only the pages this scenario controls — a background prefetch may
+     * also call `renderPage` for pages neither queued nor asserted on here,
+     * and those calls must not be mistaken for part of the sequence below. */
+    const TRACKED = [1, 2, 10, 11, 12];
+
+    it("hands a newly visible spread's page to the renderer before an overscan spread's page that was already queued ahead of it", async () => {
+      const doc = fakeDoc(20);
+      const order: number[] = [];
+      const gates = new Map<number, () => void>();
+      // Every render is held open until this test resolves it by hand — the
+      // fake stands in for pdf.js's worker being busy with something else,
+      // the situation `RenderQueue` exists to arbitrate.
+      vi.mocked(doc.renderPage).mockImplementation(
+        (pageNumber: number) =>
+          new Promise<void>((resolve) => {
+            order.push(pageNumber);
+            gates.set(pageNumber, resolve);
+          }),
+      );
+      const tracked = () => order.filter((page) => TRACKED.includes(page));
+      const resolvePage = (pageNumber: number) => {
+        const resolve = gates.get(pageNumber);
+        if (!resolve) {
+          throw new Error(`renderPage(${pageNumber}) was never called`);
+        }
+        resolve();
+      };
+
+      render(
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(20)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Page 1 (domIndex 0, visible) starts immediately — the queue was
+      // idle. Page 2 (domIndex 1, overscan) queues behind it.
+      await waitFor(() => expect(tracked()).toEqual([1]));
+      resolvePage(1);
+      // Page 2 now occupies the single slot, held open here to model a
+      // render still in flight — exactly what a reader flipping pages
+      // quickly leaves behind for the next spread to queue up against.
+      await waitFor(() => expect(tracked()).toEqual([1, 2]));
+
+      // A fast jump: spread index 10 becomes the strictly-visible one.
+      // domIndex 9 (page 10) and 11 (page 12) are the new overscan
+      // neighbours; domIndex 9's `PageCanvas` commits before domIndex 10's
+      // (ascending DOM order), so page 10 is queued — behind page 2, still
+      // running — *before page 11 (the actually-visible page) exists at all*.
+      const element = scroller();
+      element.scrollLeft = 1480; // 10 spreads × 148px (100px page + 2×24px padding)
+      fireEvent.scroll(element);
+      await flushScroll();
+      // Scheduling alone does not call `renderPage` yet — only page 2's own
+      // resolution, next, drains the queue far enough to reach it.
+      expect(tracked()).toEqual([1, 2]);
+
+      resolvePage(2);
+      // Page 11 is what the reader is actually looking at now. Despite page
+      // 10 having been queued first, priority must still put page 11 first.
+      await waitFor(() => expect(tracked()).toEqual([1, 2, 11]));
+
+      resolvePage(11);
+      await waitFor(() => expect(tracked()).toEqual([1, 2, 11, 10]));
+
+      resolvePage(10);
+      await waitFor(() => expect(tracked()).toEqual([1, 2, 11, 10, 12]));
+
+      resolvePage(12);
+    });
+
+    it("hands a prefetch target to the renderer only after the visible and overscan work ahead of it", async () => {
+      const doc = fakeDoc(20);
+      const order: number[] = [];
+      const gates = new Map<number, () => void>();
+      // Every render is held open until this test resolves it by hand, same
+      // as above — the fake stands in for the worker being busy, which is
+      // exactly the situation the prefetch effect must yield to.
+      vi.mocked(doc.renderPage).mockImplementation(
+        (pageNumber: number) =>
+          new Promise<void>((resolve) => {
+            order.push(pageNumber);
+            gates.set(pageNumber, resolve);
+          }),
+      );
+      const resolvePage = (pageNumber: number) => {
+        const resolve = gates.get(pageNumber);
+        if (!resolve) {
+          throw new Error(`renderPage(${pageNumber}) was never called`);
+        }
+        resolve();
+      };
+      // Only used to detect, deterministically, the moment the prefetch
+      // effect's idle callback (a `setTimeout` fallback in jsdom — see
+      // `scheduleIdle`) has reached the queue — a fixed real-time wait would
+      // either race a slow CI runner or pad every run with dead time.
+      const scheduleSpy = vi.spyOn(RenderQueue.prototype, "schedule");
+
+      render(
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(20)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Page 1 (domIndex 0, visible) starts immediately; page 2 (domIndex 1,
+      // overscan) queues behind it.
+      await waitFor(() => expect(order).toEqual([1]));
+
+      // Wait for page 3 — the one target beyond the initial overscan range
+      // with `PREFETCH_COUNT` halved for a stationary reader
+      // (`direction: "none"`) — to actually reach the queue at "prefetch"
+      // priority.
+      await waitFor(() =>
+        expect(
+          scheduleSpy.mock.calls.some((call) => call[0] === "prefetch"),
+        ).toBe(true),
+      );
+      scheduleSpy.mockRestore();
+
+      // Reaching the queue is not the same as reaching the renderer: page 1
+      // is still the only call `doc.renderPage` has actually seen.
+      expect(order).toEqual([1]);
+
+      resolvePage(1);
+      await waitFor(() => expect(order).toEqual([1, 2]));
+
+      resolvePage(2);
+      // Only once both the visible and overscan work ahead of it have
+      // drained does the prefetch target reach the renderer — issue #35's
+      // whole point is that a prefetch never gets there first.
+      await waitFor(() => expect(order).toEqual([1, 2, 3]));
+
+      resolvePage(3);
+    });
+
+    it("holds overscan spreads at prefetch priority while the range keeps moving, then promotes them once it settles", async () => {
+      // This one spies on `RenderQueue.schedule` directly rather than
+      // inferring priority from `renderPage` call *order* (as the other
+      // tests in this file do): "overscan" and "prefetch" only ever differ
+      // in dequeue order when something else is *also* pending at a
+      // different tier to race against, and the only other source of a
+      // "prefetch"-tier task is the background prefetch effect, whose own
+      // `scheduleIdle` callback is inherently deferred — it always reaches
+      // the queue a tick *after* the same range's synchronously-scheduled
+      // overscan neighbours, and gets aborted-and-dropped outright by any
+      // further range change before it even gets that far (same as any
+      // other stale queued task). There is no way, using only real app
+      // effects, to get a genuine prefetch task to arrive at the queue
+      // ahead of an overscan-tier one it could be compared against — so the
+      // priority actually passed to `schedule` has to be read directly.
+      const doc = fakeDoc(20);
+      // Never resolves: every render sits in (or behind) the queue for the
+      // whole test, so the settle transition's re-schedule is still
+      // observable — an already-cached page would short-circuit straight
+      // past `RenderQueue` on its next mount and never call `schedule` again.
+      vi.mocked(doc.renderPage).mockImplementation(
+        () => new Promise<void>(() => {}),
+      );
+      const scheduleSpy = vi.spyOn(RenderQueue.prototype, "schedule");
+
+      render(
+        <PdfViewer
+          doc={doc}
+          pageSizes={pageSizes(20)}
+          filePath="/papers/paper.pdf"
+          fileName="paper.pdf"
+          onClose={vi.fn()}
+        />,
+      );
+
+      // Page 1 (visible) and page 2 (overscan, domIndex 1) are both
+      // scheduled on mount. Nothing has "moved" yet, so page 2 gets full
+      // "overscan" priority straight away — the debounce must never delay
+      // the document's own opening overscan neighbour.
+      await waitFor(() =>
+        expect(
+          scheduleSpy.mock.calls.some((call) => call[0] === "overscan"),
+        ).toBe(true),
+      );
+      scheduleSpy.mockClear();
+
+      // A fast jump: spread index 10 becomes strictly visible.
+      const element = scroller();
+      element.scrollLeft = 1480; // 10 spreads × 148px (100px page + 2×24px padding)
+      fireEvent.scroll(element);
+      await flushScroll();
+
+      // domIndex 9 (page 10) and domIndex 11 (page 12) — the new overscan
+      // neighbours — must be scheduled at "prefetch" while the debounce
+      // holds, never at "overscan", even though domIndex 10 (page 11, the
+      // new visible spread) is scheduled at "visible" as always.
+      await waitFor(() =>
+        expect(
+          scheduleSpy.mock.calls.some((call) => call[0] === "visible"),
+        ).toBe(true),
+      );
+      expect(
+        scheduleSpy.mock.calls.some((call) => call[0] === "overscan"),
+      ).toBe(false);
+
+      scheduleSpy.mockClear();
+
+      // Once the range has sat still for OVERSCAN_SETTLE_MS with no further
+      // movement, the same two overscan spreads are re-scheduled at full
+      // "overscan" priority — the debounce lifting on its own, not a scroll.
+      await waitFor(
+        () =>
+          expect(
+            scheduleSpy.mock.calls.some((call) => call[0] === "overscan"),
+          ).toBe(true),
+        { timeout: OVERSCAN_SETTLE_MS + 1000 },
+      );
+
+      scheduleSpy.mockRestore();
     });
   });
 
