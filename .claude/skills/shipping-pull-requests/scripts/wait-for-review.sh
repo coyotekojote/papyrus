@@ -65,10 +65,12 @@ while ((SECONDS < deadline)); do
     # success にする。レビューの存在だけを見ると、本文が空のレビューが先に
     # API へ現れる場合があり、まだ進行中なのに完了と誤認する。status が権威。
     # combined status API は context ごとに最新1件を返すが、配列の順序に
-    # 頼らずに済むよう updated_at で最新を取る。
-    cr="$(gh api "repos/$REPO/commits/$head_sha/status" \
-      --jq '([.statuses[] | select(.context == "CodeRabbit")] | max_by(.updated_at)) as $s
-            | {state: ($s.state // "missing"), description: ($s.description // "")}' \
+    # 頼らずに済むよう updated_at で最新を取る。statuses は 1 ページ 30 件で
+    # 切れるので、全ページを集約してから絞る (--slurp は --jq と併用できない
+    # ため、外部の jq に渡す)。
+    cr="$(gh api "repos/$REPO/commits/$head_sha/status" --paginate --slurp 2>/dev/null \
+      | jq -r '([.[] | .statuses[] | select(.context == "CodeRabbit")] | max_by(.updated_at)) as $s
+               | {state: ($s.state // "missing"), description: ($s.description // "")}' \
       2>/dev/null || echo '{"state":"missing","description":""}')"
     cr_status="$(jq -r .state <<<"$cr")"
     cr_description="$(jq -r .description <<<"$cr")"
