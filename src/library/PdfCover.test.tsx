@@ -24,6 +24,8 @@ function fakeDoc(overrides: Partial<Record<string, unknown>> = {}) {
   };
 }
 
+let consoleError: ReturnType<typeof vi.spyOn>;
+
 beforeEach(() => {
   readPdfFile.mockReset();
   loadDefaultRenderer.mockReset();
@@ -32,6 +34,9 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
     "data:image/png;base64,stub",
   );
+  // Failures are reported to the console on purpose; captured so the expected
+  // ones do not print, and so the tests below can assert on them.
+  consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -49,15 +54,35 @@ describe("PdfCover", () => {
     await waitFor(() => {
       expect(document.querySelector("img.cover__image")).not.toBeNull();
     });
+    // 160 (COVER_WIDTH) / 100 (the page's own width): the cover is rendered at
+    // exactly the width the grid reserves for it.
     expect(doc.renderPage).toHaveBeenCalledWith(
       1,
-      expect.objectContaining({ scale: expect.any(Number) }),
+      expect.objectContaining({ scale: 1.6 }),
     );
     expect(doc.destroy).toHaveBeenCalled();
   });
 
+  it("renders at scale 1 when the page reports no width", async () => {
+    readPdfFile.mockResolvedValue(new Uint8Array([1]));
+    const doc = fakeDoc({
+      getPageSize: vi.fn().mockResolvedValue({ width: 0, height: 0 }),
+    });
+    loadDefaultRenderer.mockResolvedValue({ open: async () => doc });
+
+    render(<PdfCover path="/a/report-zero-width.pdf" name="report.pdf" />);
+
+    await waitFor(() => {
+      expect(doc.renderPage).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ scale: 1 }),
+      );
+    });
+  });
+
   it("falls back to a placeholder with the file's initial when the file cannot be read", async () => {
-    readPdfFile.mockRejectedValue(new Error("missing"));
+    const cause = new Error("missing");
+    readPdfFile.mockRejectedValue(cause);
 
     render(<PdfCover path="/a/report-missing.pdf" name="report.pdf" />);
 
@@ -68,6 +93,10 @@ describe("PdfCover", () => {
       expect(screen.getByText("R")).toBeInTheDocument();
     });
     expect(document.querySelector("img.cover__image")).toBeNull();
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to render the cover for /a/report-missing.pdf",
+      cause,
+    );
   });
 
   it("destroys the document even when rendering the page fails", async () => {

@@ -84,7 +84,12 @@ export function PdfCover({ path, name }: PdfCoverProps) {
         const src = await renderCover(path);
         coverCache.set(path, src);
         if (!cancelled) setState({ status: "ready", src });
-      } catch {
+      } catch (cause) {
+        // The placeholder says a cover is missing but not why, and a reader
+        // has no way to ask. A corrupt file, a permission error and a renderer
+        // that failed to start all look alike on screen, so the reason goes to
+        // the console — the one place left to tell them apart.
+        console.error(`Failed to render the cover for ${path}`, cause);
         if (!cancelled) setState({ status: "failed" });
       }
     });

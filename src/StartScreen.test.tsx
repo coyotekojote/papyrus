@@ -1,7 +1,8 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RecentFile } from "./files/recent";
+import { LIBRARY_VIEW_MODE_STORAGE_KEY } from "./library/library";
 import { StartScreen, type StartScreenProps } from "./StartScreen";
 
 const readPdfFile = vi.hoisted(() => vi.fn());
@@ -35,8 +36,16 @@ function renderStartScreen(overrides: Partial<StartScreenProps> = {}) {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // No cover is painted here — this file is about the library's own controls,
+  // and `PdfCover.test.tsx` covers the rendering. The failure that follows is
+  // expected, so its console report is captured rather than printed.
   readPdfFile.mockReset().mockRejectedValue(new Error("not read in this test"));
   loadDefaultRenderer.mockReset();
+  vi.spyOn(console, "error").mockImplementation(() => {});
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("StartScreen", () => {
@@ -67,6 +76,35 @@ describe("StartScreen", () => {
     );
     expect(screen.getByText("Report.pdf")).toBeInTheDocument();
     expect(screen.getByText("契約書.pdf")).toBeInTheDocument();
+    expect(document.querySelectorAll(".recent__item")).toHaveLength(2);
+  });
+
+  it("keeps the chosen view across a remount by storing it", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <StartScreen
+        recentFiles={FILES}
+        busy={false}
+        error={null}
+        onOpen={vi.fn()}
+        onOpenRecent={vi.fn()}
+        onRemoveRecent={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "ファイル名" }));
+    expect(window.localStorage.getItem(LIBRARY_VIEW_MODE_STORAGE_KEY)).toBe(
+      "list",
+    );
+
+    unmount();
+    renderStartScreen();
+
+    expect(screen.getByRole("button", { name: "ファイル名" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(document.querySelectorAll(".recent__item")).toHaveLength(2);
   });
 
