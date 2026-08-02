@@ -1,3 +1,5 @@
+pub mod keychain;
+pub mod settings;
 pub mod sidecar;
 
 /// Builds a friendly greeting for the given name.
@@ -28,6 +30,11 @@ pub fn run() {
             sidecar::save_clip,
             sidecar::load_clip,
             sidecar::sidecar_status,
+            settings::load_settings,
+            settings::save_settings,
+            keychain::save_api_key,
+            keychain::delete_api_key,
+            keychain::api_key_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

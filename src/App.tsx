@@ -14,6 +14,8 @@ import {
   type PageSize,
   type PdfDocumentHandle,
 } from "./pdf";
+import { SettingsDialog } from "./settings/SettingsDialog";
+import { useSettings } from "./settings/use-settings";
 import { StartScreen } from "./StartScreen";
 import { PdfViewer } from "./viewer/PdfViewer";
 
@@ -37,6 +39,9 @@ function App() {
   const [openDocument, setOpenDocument] = useState<OpenDocument | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const settings = useSettings();
 
   const openDocumentRef = useRef<OpenDocument | null>(null);
   openDocumentRef.current = openDocument;
@@ -120,28 +125,51 @@ function App() {
     [rememberRecentFiles],
   );
 
+  // Rendered over whichever screen is up, so the settings are reachable both
+  // before a document is opened and while one is being read.
+  const settingsDialog = settingsOpen ? (
+    <SettingsDialog
+      settings={settings.settings}
+      loaded={settings.loaded}
+      error={settings.error}
+      onChange={settings.update}
+      onClose={() => setSettingsOpen(false)}
+    />
+  ) : null;
+  const openSettings = () => setSettingsOpen(true);
+
   if (openDocument) {
     return (
-      <PdfViewer
-        key={openDocument.path}
-        doc={openDocument.doc}
-        pageSizes={openDocument.pageSizes}
-        filePath={openDocument.path}
-        fileName={openDocument.name}
-        onClose={handleClose}
-      />
+      <>
+        <PdfViewer
+          key={openDocument.path}
+          doc={openDocument.doc}
+          pageSizes={openDocument.pageSizes}
+          filePath={openDocument.path}
+          fileName={openDocument.name}
+          defaultBinding={settings.settings.defaultBinding}
+          defaultViewMode={settings.settings.defaultViewMode}
+          onClose={handleClose}
+          onOpenSettings={openSettings}
+        />
+        {settingsDialog}
+      </>
     );
   }
 
   return (
-    <StartScreen
-      recentFiles={recentFiles}
-      busy={busy}
-      error={error}
-      onOpen={() => void handleOpen()}
-      onOpenRecent={(path) => void openPath(path)}
-      onRemoveRecent={handleRemoveRecent}
-    />
+    <>
+      <StartScreen
+        recentFiles={recentFiles}
+        busy={busy}
+        error={error}
+        onOpen={() => void handleOpen()}
+        onOpenRecent={(path) => void openPath(path)}
+        onRemoveRecent={handleRemoveRecent}
+        onOpenSettings={openSettings}
+      />
+      {settingsDialog}
+    </>
   );
 }
 

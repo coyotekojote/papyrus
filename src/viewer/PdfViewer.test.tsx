@@ -20,6 +20,7 @@ import {
 import { SAVE_DEBOUNCE_MS } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import { PdfViewer } from "./PdfViewer";
+import type { Binding, ViewMode } from "./spreads";
 
 vi.mock("../files/sidecar", async (importActual) => {
   const actual = await importActual<typeof import("../files/sidecar")>();
@@ -154,19 +155,37 @@ async function flushScroll() {
   });
 }
 
-function renderViewer(pageCount = PAGE_COUNT, outline: OutlineNode[] = []) {
+function renderViewer(
+  pageCount = PAGE_COUNT,
+  outline: OutlineNode[] = [],
+  /** App settings this document opens with (issue #9). */
+  defaults: { binding?: Binding; viewMode?: ViewMode } = {},
+) {
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
-  render(
+  const onOpenSettings = vi.fn();
+  const view = (next: { binding?: Binding; viewMode?: ViewMode }) => (
     <PdfViewer
       doc={doc}
       pageSizes={pageSizes(pageCount)}
       filePath="/papers/paper.pdf"
       fileName="paper.pdf"
+      defaultBinding={next.binding}
+      defaultViewMode={next.viewMode}
       onClose={onClose}
-    />,
+      onOpenSettings={onOpenSettings}
+    />
   );
-  return { doc, onClose, user: userEvent.setup() };
+  const { rerender } = render(view(defaults));
+  return {
+    doc,
+    onClose,
+    onOpenSettings,
+    user: userEvent.setup(),
+    /** Stands in for the reader changing the settings mid-document. */
+    changeSettings: (next: { binding?: Binding; viewMode?: ViewMode }) =>
+      rerender(view(next)),
+  };
 }
 
 describe("PdfViewer", () => {
@@ -240,6 +259,45 @@ describe("PdfViewer", () => {
 
     const [rightFirst, rightSecond] = firstRenderedPair();
     expect(rightFirst).toBeGreaterThan(rightSecond);
+  });
+
+  it("opens with the binding and view mode from the settings", () => {
+    renderViewer(PAGE_COUNT, [], { binding: "right", viewMode: "spread" });
+
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "見開き" })).toBeInTheDocument();
+    const [first, second] = firstRenderedPair();
+    expect(first).toBeGreaterThan(second);
+  });
+
+  it("follows a settings change on the document already open", () => {
+    const { changeSettings } = renderViewer();
+
+    changeSettings({ binding: "right", viewMode: "spread" });
+
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "見開き" })).toBeInTheDocument();
+  });
+
+  it("keeps a toolbar override until the setting itself changes", async () => {
+    const { changeSettings, user } = renderViewer(PAGE_COUNT, [], {
+      binding: "left",
+    });
+
+    await user.click(screen.getByRole("button", { name: "左綴じ" }));
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+
+    // Re-rendering for an unrelated reason must not undo the reader's choice.
+    changeSettings({ binding: "left" });
+    expect(screen.getByRole("button", { name: "右綴じ" })).toBeInTheDocument();
+  });
+
+  it("opens the settings from the toolbar", async () => {
+    const { onOpenSettings, user } = renderViewer();
+
+    await user.click(screen.getByRole("button", { name: "設定" }));
+
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   it("zooms with the toolbar and resets to 100%", async () => {
