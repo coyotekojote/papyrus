@@ -97,9 +97,10 @@ export interface PdfFileContents {
  * one. iOS can relocate a picked file's container between launches, so the
  * path a recent-files entry remembers may no longer be it — the bookmark, if
  * one was saved, is resolved fresh instead. Falls back to `path` when there
- * is no bookmark, resolution fails, or the resolved location turns out not to
- * be readable either. The returned `path` reflects whichever of the two was
- * actually read, so callers can register/use that one downstream (issue #49).
+ * is no bookmark, resolution fails, or the file is missing at the resolved
+ * location; any other read error there (e.g. permissions) propagates as-is.
+ * The returned `path` reflects whichever of the two was actually read, so
+ * callers can register/use that one downstream (issue #49).
  */
 export async function readPdfFileWithBookmark(
   path: string,
