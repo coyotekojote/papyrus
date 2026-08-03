@@ -13,6 +13,13 @@ export interface RecentFile {
    * both cases just fall back to opening `path` directly.
    */
   bookmark?: string;
+  /**
+   * 1-based page number last shown for this file (issue #43), so reopening it
+   * from the recent list picks up where reading left off. Absent on entries
+   * saved before this field existed, and on any entry whose stored value
+   * turned out malformed — both cases just fall back to page 1.
+   */
+  lastPage?: number;
 }
 
 export const MAX_RECENT_FILES = 10;
@@ -86,10 +93,35 @@ export function parseRecentFiles(raw: string | null): RecentFile[] {
       ...(typeof entry.bookmark === "string"
         ? { bookmark: entry.bookmark }
         : {}),
+      // Same treatment as `bookmark`: a malformed `lastPage` (0, negative, a
+      // fraction, a string, …) just drops the field rather than the entry —
+      // the reader still gets the file back, only without the saved position.
+      ...(typeof entry.lastPage === "number" &&
+      Number.isInteger(entry.lastPage) &&
+      entry.lastPage >= 1
+        ? { lastPage: entry.lastPage }
+        : {}),
     });
     if (files.length >= MAX_RECENT_FILES) break;
   }
   return files;
+}
+
+/**
+ * Updates the entry for `path` with `patch`, leaving order and every other
+ * field untouched. Unlike {@link addRecentFile}, this never moves the entry
+ * to the head or bumps `openedAt` — it exists for updates (the last page read,
+ * issue #43) that happen continuously while a file is open and must not read
+ * as "just opened" every time. A `path` not present in `list` is a no-op.
+ */
+export function updateRecentFile(
+  list: readonly RecentFile[],
+  path: string,
+  patch: Partial<Pick<RecentFile, "lastPage">>,
+): RecentFile[] {
+  return list.map((entry) =>
+    entry.path === path ? { ...entry, ...patch } : entry,
+  );
 }
 
 export function serializeRecentFiles(list: readonly RecentFile[]): string {
