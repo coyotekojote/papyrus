@@ -156,6 +156,18 @@ export interface PdfViewerProps {
    */
   defaultBinding?: Binding;
   defaultViewMode?: ViewMode;
+  /**
+   * 1-based page to open on (issue #43), from the recent-files entry. Out of
+   * range or omitted both just start the document at page 1 — clamping into
+   * range is this component's job, not the caller's.
+   */
+  initialPage?: number;
+  /**
+   * Notified whenever the page the reader is looking at changes, including
+   * once on mount with the (possibly clamped) starting page — so the caller
+   * can persist it (issue #43) without having to duplicate the clamping.
+   */
+  onPageChange?: (page: number) => void;
   onClose: () => void;
   onOpenSettings?: () => void;
 }
@@ -230,6 +242,8 @@ export function PdfViewer({
   fileName,
   defaultBinding = "left",
   defaultViewMode = "single",
+  initialPage,
+  onPageChange,
   onClose,
   onOpenSettings,
 }: PdfViewerProps) {
@@ -244,7 +258,15 @@ export function PdfViewer({
   );
   const [binding, setBinding] = useState<Binding>(defaultBinding);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM);
-  const [currentPage, setCurrentPage] = useState(1);
+  // Clamped once, from the initial props: `doc` never changes for the
+  // lifetime of this component (the caller remounts via `key={path}` for a
+  // new one), so there is nothing to re-clamp against later.
+  const [currentPage, setCurrentPage] = useState(() =>
+    Math.min(
+      Math.max(Math.floor(initialPage ?? 1) || 1, 1),
+      Math.max(doc.pageCount, 1),
+    ),
+  );
   const [viewportWidth, setViewportWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -619,6 +641,13 @@ export function PdfViewer({
 
   // Free rendered canvases when the document is closed.
   useEffect(() => () => cache.clear(), [cache]);
+
+  // Tells the caller which page is on screen, including the very first
+  // render — so persisting it (issue #43) needs no separate "what did it
+  // start on" logic of its own.
+  useEffect(() => {
+    onPageChange?.(currentPage);
+  }, [currentPage, onPageChange]);
 
   const goToSpread = useCallback(
     (index: number, behavior: ScrollBehavior = "smooth") => {

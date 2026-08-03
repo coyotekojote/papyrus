@@ -8,6 +8,7 @@ import {
   RECENT_FILES_STORAGE_KEY,
   removeRecentFile,
   saveRecentFiles,
+  updateRecentFile,
   type RecentFile,
   type RecentFilesStorage,
 } from "./recent";
@@ -207,6 +208,78 @@ describe("parseRecentFiles", () => {
     const parsed = parseRecentFiles(raw);
     expect(parsed.map((f) => f.path)).toEqual(["/a.pdf", "/b.pdf"]);
     expect(parsed.every((f) => f.bookmark === undefined)).toBe(true);
+  });
+});
+
+describe("parseRecentFiles: lastPage (issue #43)", () => {
+  it("keeps a valid lastPage alongside an entry", () => {
+    const raw = JSON.stringify([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5, lastPage: 12 },
+    ]);
+
+    expect(parseRecentFiles(raw)).toEqual([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5, lastPage: 12 },
+    ]);
+  });
+
+  it("keeps an entry with no lastPage field, for pre-#43 storage", () => {
+    const raw = JSON.stringify([
+      { path: "/a.pdf", name: "a.pdf", openedAt: 5 },
+    ]);
+
+    const parsed = parseRecentFiles(raw);
+    expect(parsed).toEqual([{ path: "/a.pdf", name: "a.pdf", openedAt: 5 }]);
+    expect(parsed[0].lastPage).toBeUndefined();
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -3],
+    ["a fraction", 1.5],
+    ["a string", "3"],
+    ["null", null],
+  ])(
+    "drops a lastPage that is %s but keeps the rest of the entry",
+    (_label, lastPage) => {
+      const raw = JSON.stringify([
+        { path: "/a.pdf", name: "a.pdf", openedAt: 5, lastPage },
+      ]);
+
+      const parsed = parseRecentFiles(raw);
+      expect(parsed).toEqual([{ path: "/a.pdf", name: "a.pdf", openedAt: 5 }]);
+      expect(parsed[0].lastPage).toBeUndefined();
+    },
+  );
+});
+
+describe("updateRecentFile", () => {
+  it("sets lastPage on the matching entry without moving it or touching openedAt", () => {
+    const list = [entry("/a.pdf", 1), entry("/b.pdf", 2)];
+    const result = updateRecentFile(list, "/b.pdf", { lastPage: 7 });
+
+    expect(result.map((f) => f.path)).toEqual(["/a.pdf", "/b.pdf"]);
+    expect(result[1]).toEqual({ ...list[1], lastPage: 7 });
+    expect(result[1].openedAt).toBe(2);
+  });
+
+  it("overwrites a previously stored lastPage", () => {
+    const list = [{ ...entry("/a.pdf"), lastPage: 3 }];
+    const result = updateRecentFile(list, "/a.pdf", { lastPage: 9 });
+
+    expect(result[0].lastPage).toBe(9);
+  });
+
+  it("leaves the list unchanged (by value) when the path is not found", () => {
+    const list = [entry("/a.pdf")];
+    expect(updateRecentFile(list, "/missing.pdf", { lastPage: 5 })).toEqual(
+      list,
+    );
+  });
+
+  it("does not mutate the input list", () => {
+    const list = [entry("/a.pdf")];
+    updateRecentFile(list, "/a.pdf", { lastPage: 4 });
+    expect(list[0].lastPage).toBeUndefined();
   });
 });
 
