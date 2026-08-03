@@ -273,6 +273,88 @@ describe("useNotes", () => {
     expect(saveNotes).toHaveBeenCalledWith(PATH, "閉じる直前の一文", 111);
   });
 
+  describe("initializeContent", () => {
+    it("fills an empty note without scheduling a save", async () => {
+      const { result } = await mountLoaded("", 111);
+
+      act(() => result.current.initializeContent("# 見出し\n"));
+
+      expect(result.current.content).toBe("# 見出し\n");
+      expect(result.current.status).toBe("saved");
+      await runDebouncedSave();
+      expect(saveNotes).not.toHaveBeenCalled();
+    });
+
+    it("does not overwrite a note that already has content", async () => {
+      const { result } = await mountLoaded("既存のメモ", 111);
+
+      act(() => result.current.initializeContent("# 見出し\n"));
+
+      expect(result.current.content).toBe("既存のメモ");
+      await runDebouncedSave();
+      expect(saveNotes).not.toHaveBeenCalled();
+    });
+
+    it("treats a whitespace-only note as empty and replaces it", async () => {
+      const { result } = await mountLoaded(" \n\t", 111);
+
+      act(() => result.current.initializeContent("# 見出し\n"));
+
+      expect(result.current.content).toBe("# 見出し\n");
+      await runDebouncedSave();
+      expect(saveNotes).not.toHaveBeenCalled();
+    });
+
+    it("is ignored before the initial load finishes", async () => {
+      let resolveLoad: (value: { content: string; modifiedAtMs: null }) => void;
+      vi.mocked(loadNotes).mockReturnValue(
+        new Promise((resolve) => {
+          resolveLoad = resolve;
+        }),
+      );
+
+      const { result } = renderHook(() => useNotes(PATH));
+      act(() => result.current.initializeContent("# 見出し\n"));
+
+      expect(result.current.content).toBe("");
+      await act(async () => {
+        resolveLoad({ content: "", modifiedAtMs: null });
+      });
+
+      // The load itself must not have been clobbered by the earlier call.
+      expect(result.current.content).toBe("");
+    });
+
+    it("is ignored while a conflict is open", async () => {
+      const { result } = await mountLoaded("元の内容", 111);
+      vi.mocked(saveNotes).mockRejectedValue(
+        new SidecarConflictError("notes.md"),
+      );
+      vi.mocked(loadNotes).mockResolvedValue({
+        content: "別の端末で書かれた内容",
+        modifiedAtMs: 222,
+      });
+      act(() => result.current.setContent(""));
+      await runDebouncedSave();
+      expect(result.current.status).toBe("conflict");
+
+      act(() => result.current.initializeContent("# 見出し\n"));
+
+      expect(result.current.content).toBe("");
+      expect(result.current.status).toBe("conflict");
+    });
+
+    it("lets a normal edit save afterwards", async () => {
+      const { result } = await mountLoaded("", 111);
+
+      act(() => result.current.initializeContent("# 見出し\n"));
+      act(() => result.current.setContent("# 見出し\n本文"));
+      await runDebouncedSave();
+
+      expect(saveNotes).toHaveBeenCalledWith(PATH, "# 見出し\n本文", 111);
+    });
+  });
+
   it("reloads when the reader opens another document", async () => {
     vi.mocked(loadNotes).mockResolvedValue({
       content: "一冊目",

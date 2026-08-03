@@ -59,9 +59,9 @@ PDF と同じフォルダにサイドカーを置く。ユーザーが iCloud Dr
 ### アプリ設定（PDFに紐づかないもの）
 
 サイドカーは「その PDF のもの」だけを持つ。アプリ全体の設定は OS の config ディレクトリの
-`settings.json`（デフォルト綴じ方向・表示モード、翻訳プロバイダ、翻訳先言語）に置き、同じく
-atomic write する。手で編集できる素の JSON なので、読み込みはフィールド単位でデフォルトに
-フォールバックする。
+`settings.json`（デフォルト綴じ方向・表示モード、翻訳プロバイダ、翻訳先言語、メモへの章立て
+自動挿入・カーソル追従の on/off）に置き、同じく atomic write する。手で編集できる素の JSON
+なので、読み込みはフィールド単位でデフォルトにフォールバックする。
 
 APIキーはここには書かない。OS のキーチェーン（macOS/iOS は Keychain Services、Windows は
 Credential Manager、Linux は Secret Service）に Rust 側が保存し、WebView には渡さない。

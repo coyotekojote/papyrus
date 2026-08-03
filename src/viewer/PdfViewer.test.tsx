@@ -199,18 +199,26 @@ async function flushScroll() {
   });
 }
 
+interface ViewerDefaults {
+  binding?: Binding;
+  viewMode?: ViewMode;
+  /** Issue #46; left at the component defaults (both on) unless overridden. */
+  notesOutlineInsert?: boolean;
+  notesOutlineFollow?: boolean;
+}
+
 function renderViewer(
   pageCount = PAGE_COUNT,
   outline: OutlineNode[] = [],
   /** App settings this document opens with (issue #9). */
-  defaults: { binding?: Binding; viewMode?: ViewMode } = {},
+  defaults: ViewerDefaults = {},
   /** Where to start, and how to observe page changes (issue #43). */
   paging: { initialPage?: number; onPageChange?: (page: number) => void } = {},
 ) {
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
   const onOpenSettings = vi.fn();
-  const view = (next: { binding?: Binding; viewMode?: ViewMode }) => (
+  const view = (next: ViewerDefaults) => (
     <PdfViewer
       doc={doc}
       pageSizes={pageSizes(pageCount)}
@@ -218,6 +226,8 @@ function renderViewer(
       fileName="paper.pdf"
       defaultBinding={next.binding}
       defaultViewMode={next.viewMode}
+      notesOutlineInsert={next.notesOutlineInsert}
+      notesOutlineFollow={next.notesOutlineFollow}
       initialPage={paging.initialPage}
       onPageChange={paging.onPageChange}
       onClose={onClose}
@@ -232,8 +242,7 @@ function renderViewer(
     unmount,
     user: userEvent.setup(),
     /** Stands in for the reader changing the settings mid-document. */
-    changeSettings: (next: { binding?: Binding; viewMode?: ViewMode }) =>
-      rerender(view(next)),
+    changeSettings: (next: ViewerDefaults) => rerender(view(next)),
   };
 }
 
@@ -942,7 +951,14 @@ describe("PdfViewer", () => {
     }
 
     it("stays closed until the toolbar button is pressed", () => {
-      const { doc } = renderViewer(PAGE_COUNT, outline);
+      // Both outline-dependent notes settings (#46) are off here so this
+      // stays a test of the sidebar's own laziness — with either on, the
+      // outline is fetched as soon as the document opens (see the notes
+      // panel describes below).
+      const { doc } = renderViewer(PAGE_COUNT, outline, {
+        notesOutlineInsert: false,
+        notesOutlineFollow: false,
+      });
 
       expect(screen.queryByRole("list", { name: "目次" })).toBeNull();
       expect(doc.getOutline).not.toHaveBeenCalled();
@@ -1878,6 +1894,135 @@ describe("PdfViewer", () => {
       expect(
         screen.queryByRole("textbox", { name: "メモ (markdown)" }),
       ).toBeNull();
+    });
+
+    describe("章立て自動挿入・カーソル追従 (issue #46)", () => {
+      const notesOutline: OutlineNode[] = [
+        { title: "序章", pageNumber: 1, children: [] },
+        {
+          title: "本論",
+          pageNumber: 3,
+          children: [{ title: "後半", pageNumber: 6, children: [] }],
+        },
+        { title: "付録", pageNumber: null, children: [] },
+      ];
+
+      it("inserts the outline as markdown headings into an empty note", async () => {
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "",
+          modifiedAtMs: 7,
+        });
+        const { user } = renderViewer(PAGE_COUNT, notesOutline);
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        });
+
+        await waitFor(() =>
+          expect(editor).toHaveValue("# 序章\n\n# 本論\n\n## 後半\n\n# 付録\n"),
+        );
+        // A default insertion is not the reader editing: it must not autosave.
+        expect(saveNotes).not.toHaveBeenCalled();
+      });
+
+      it("leaves a note that already has content untouched", async () => {
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "既存のメモ",
+          modifiedAtMs: 7,
+        });
+        const { user } = renderViewer(PAGE_COUNT, notesOutline);
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        });
+
+        await waitFor(() => expect(editor).toHaveValue("既存のメモ"));
+      });
+
+      it("inserts nothing when the setting is off", async () => {
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "",
+          modifiedAtMs: 7,
+        });
+        const { user } = renderViewer(PAGE_COUNT, notesOutline, {
+          notesOutlineInsert: false,
+        });
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        });
+
+        await waitFor(() => expect(editor).toBeEnabled());
+        expect(editor).toHaveValue("");
+      });
+
+      it("moves the notes cursor to the current section's heading as the reader turns pages", async () => {
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "",
+          modifiedAtMs: 7,
+        });
+        const { user } = renderViewer(PAGE_COUNT, notesOutline);
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = (await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        })) as HTMLTextAreaElement;
+        await waitFor(() =>
+          expect(editor).toHaveValue("# 序章\n\n# 本論\n\n## 後半\n\n# 付録\n"),
+        );
+
+        await user.click(screen.getByRole("button", { name: "目次" }));
+        await user.click(screen.getByRole("button", { name: "本論 3" }));
+
+        await waitFor(() => {
+          const expected = editor.value.indexOf("# 本論");
+          expect(editor.selectionStart).toBe(expected);
+        });
+      });
+      it("follows to a section whose title has a line break, matching how it was written as a heading", async () => {
+        // A bookmark title straight from a PDF's outline dictionary can carry
+        // a line break; `formatOutlineHeadings` collapses it to a space when
+        // writing the heading, so the cursor-follow lookup must use the same
+        // normalization or it will never find the line again.
+        const wrapped: OutlineNode[] = [
+          { title: "序章\n導入編", pageNumber: 1, children: [] },
+        ];
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "",
+          modifiedAtMs: 7,
+        });
+        const { user } = renderViewer(PAGE_COUNT, wrapped);
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = (await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        })) as HTMLTextAreaElement;
+
+        await waitFor(() => expect(editor).toHaveValue("# 序章 導入編\n"));
+        await waitFor(() => expect(editor.selectionStart).toBe(0));
+      });
+
+      it("follows to a section with no title, matching the placeholder used in the heading", async () => {
+        const blank: OutlineNode[] = [
+          { title: "   ", pageNumber: 1, children: [] },
+        ];
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "",
+          modifiedAtMs: 7,
+        });
+        const { user } = renderViewer(PAGE_COUNT, blank);
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = (await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        })) as HTMLTextAreaElement;
+
+        await waitFor(() => expect(editor).toHaveValue("# （無題）\n"));
+        await waitFor(() => expect(editor.selectionStart).toBe(0));
+      });
+
+      // Whether the follow effect actually leaves the caret alone while the
+      // reader is mid-edit is covered directly in NotesPanel.test.tsx, where
+      // the focus/blur state can be driven without going through page
+      // navigation. Here it is enough that PdfViewer wires `followHeading`
+      // through at all, which the test above already exercises.
     });
   });
 

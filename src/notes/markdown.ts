@@ -34,7 +34,7 @@ export type Block =
   | { kind: "codeBlock"; lang: string | null; text: string }
   | { kind: "rule" };
 
-const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+export const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const RULE = /^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const FENCE = /^ {0,3}(```|~~~)\s*(\S*)\s*$/;
 const FENCE_END = /^ {0,3}(```|~~~)\s*$/;

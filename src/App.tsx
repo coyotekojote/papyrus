@@ -384,6 +384,8 @@ function App() {
           fileName={openDocument.name}
           defaultBinding={settings.settings.defaultBinding}
           defaultViewMode={settings.settings.defaultViewMode}
+          notesOutlineInsert={settings.settings.notesOutlineInsert}
+          notesOutlineFollow={settings.settings.notesOutlineFollow}
           initialPage={openDocument.initialPage}
           onPageChange={handlePageChange}
           onClose={handleClose}

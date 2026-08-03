@@ -136,6 +136,39 @@ describe("SettingsDialog", () => {
     });
   });
 
+  it("shows the outline settings and reports a change of either", async () => {
+    const { onChange, user } = await renderDialog({
+      ...defaultSettings(),
+      notesOutlineInsert: true,
+      notesOutlineFollow: false,
+    });
+
+    expect(
+      screen.getByRole("checkbox", { name: "メモに章立てを自動挿入" }),
+    ).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "ページ移動でメモのカーソルを追従",
+      }),
+    ).not.toBeChecked();
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "メモに章立てを自動挿入" }),
+    );
+    expect(changedTo(onChange, defaultSettings()).notesOutlineInsert).toBe(
+      false,
+    );
+
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "ページ移動でメモのカーソルを追従",
+      }),
+    );
+    expect(changedTo(onChange, defaultSettings()).notesOutlineFollow).toBe(
+      true,
+    );
+  });
+
   it("reports a change of translation provider and target language", async () => {
     const { onChange, user } = await renderDialog();
 

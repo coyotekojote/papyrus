@@ -185,6 +185,34 @@ export function SettingsDialog({
             開いている文書にもすぐ反映されます。ツールバーでの切り替えは、その
             文書だけの一時的な変更です。
           </p>
+
+          <label className="settings__row">
+            <span className="settings__label">メモに章立てを自動挿入</span>
+            <input
+              type="checkbox"
+              checked={settings.notesOutlineInsert}
+              disabled={!loaded}
+              onChange={(event) => {
+                const notesOutlineInsert = event.target.checked;
+                onChange((current) => ({ ...current, notesOutlineInsert }));
+              }}
+            />
+          </label>
+
+          <label className="settings__row">
+            <span className="settings__label">
+              ページ移動でメモのカーソルを追従
+            </span>
+            <input
+              type="checkbox"
+              checked={settings.notesOutlineFollow}
+              disabled={!loaded}
+              onChange={(event) => {
+                const notesOutlineFollow = event.target.checked;
+                onChange((current) => ({ ...current, notesOutlineFollow }));
+              }}
+            />
+          </label>
         </section>
 
         <section
