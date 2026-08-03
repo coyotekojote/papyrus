@@ -65,9 +65,13 @@ export function useClipImages(
         try {
           const bytes = await loadClip(pdfPath, file);
           return [file, new Blob([bytes], { type: "image/png" })] as const;
-        } catch {
-          // A clip that was deleted, or never synced, is not an error worth
-          // interrupting the note for: it renders as its alt text.
+        } catch (error) {
+          // A clip that was deleted, or never synced, is not worth
+          // interrupting the note for: it renders as its alt text. But the
+          // failure is still logged — silently swallowing it is what let a
+          // CSP misconfiguration hide broken clip images in production
+          // builds with no diagnostic anywhere (issue #42).
+          console.error("Failed to load clip image:", file, error);
           return null;
         }
       }),

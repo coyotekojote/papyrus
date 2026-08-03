@@ -135,7 +135,9 @@ graph TB
 
 ### 音声入力（nice to have）
 
-- まずは OS 標準のディクテーション（macOS / iOS ともテキストフィールドで利用可）に乗る。専用実装（Whisper 等）は将来検討
+- OS 標準のディクテーション（macOS / iOS ともテキストフィールドで利用可）に乗る方針（issue #13 で確定）
+- メモパネルに「音声入力」ボタンを追加。ボタン自体は認識を開始しない（WKWebView では Web Speech API が使えず、OS ディクテーションを JS から起動する公開 API もないため）。押すと編集欄へフォーカスし、OS ごとの起動方法（macOS: fn キー2回 / メニュー「編集 > 音声入力を開始」、iOS: キーボードのマイクボタン）を案内するのみ（`src/notes/dictation.ts` / `NotesPanel.tsx`）
+- 実機評価で精度・起動の手間が不足すると分かった場合は Whisper API（OpenAI `audio/transcriptions`）の追加を検討。採用時は翻訳と同じ構成（キーは keychain、HTTP は Rust 側、プロバイダは pure な build/parse でテスト）に従い、案内ボタンを録音トリガーに差し替える。ローカル Whisper（whisper.cpp 等）は依存が重く見送り
 
 ### iOS 対応
 

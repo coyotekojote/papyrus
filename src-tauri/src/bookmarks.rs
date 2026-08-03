@@ -17,7 +17,12 @@
 //! `create_bookmark`/`resolve_bookmark` returning `None` preserves — the
 //! frontend falls back to the plain saved path (see `src/files/open.ts`).
 
+use std::fs;
+
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+use crate::pdf_allowlist::{self, AllowedPdfs};
+use crate::sidecar;
 
 /// Encodes bookmark bytes as base64 so they can sit next to a recent-files
 /// entry as plain text (see `RecentFile.bookmark` in `src/files/recent.ts`).
@@ -133,10 +138,52 @@ pub fn create_bookmark(path: String) -> Result<Option<String>, String> {
 }
 
 /// Resolves a bookmark from [`create_bookmark`] back to a readable `file://`
-/// URL, or `None` off iOS.
+/// URL, or `None` off iOS. On success, also registers the resolved path in
+/// `state` (issue #40) so sidecar commands are allowed to touch it —
+/// separated out as `resolve_bookmark_with` so this can be unit tested
+/// without a live `AppHandle`/`State`.
 #[tauri::command]
-pub fn resolve_bookmark(bookmark: String) -> Result<Option<String>, String> {
-    imp::resolve_bookmark(&bookmark)
+pub fn resolve_bookmark(
+    bookmark: String,
+    state: tauri::State<'_, AllowedPdfs>,
+) -> Result<Option<String>, String> {
+    resolve_bookmark_with(&bookmark, &state)
+}
+
+/// Unlike `register_pdf_path` (`pdf_allowlist.rs`), this applies no root
+/// check: a security-scoped bookmark can resolve into another app's sandboxed
+/// container or an iCloud share outside `$HOME`/`$DOCUMENT`/`$DOWNLOAD`, and
+/// the bookmark's own existence already proves the user chose this file
+/// through the OS picker at some point. A canonicalize failure here (the
+/// bookmarked file has since moved or been deleted) just means nothing gets
+/// registered — the resolved URL is still returned as-is, and any later
+/// sidecar command on it will fail with `PathNotAllowed`, which is the
+/// correct outcome for a location this crate could not verify.
+fn resolve_bookmark_with(bookmark: &str, state: &AllowedPdfs) -> Result<Option<String>, String> {
+    let resolved = imp::resolve_bookmark(bookmark)?;
+    if let Some(url) = &resolved {
+        register_resolved_bookmark(state, url);
+    }
+    Ok(resolved)
+}
+
+/// The registration half of `resolve_bookmark_with`, split out so it can be
+/// tested directly — off iOS, `imp::resolve_bookmark` never returns `Some`,
+/// so this path would otherwise have no test coverage at all on this
+/// development machine.
+fn register_resolved_bookmark(state: &AllowedPdfs, resolved: &str) {
+    let decoded = pdf_allowlist::decode_maybe_file_url(resolved);
+    // Every other path into AllowedPdfs (`register_pdf_path_with`, via
+    // `canonical_pdf_under_roots`) checks this before inserting, so skipping
+    // it here would let a non-.pdf bookmark break the allow-list's
+    // invariant that everything in it is a path sidecar.rs may treat as a
+    // PDF.
+    if sidecar::sidecar_dir(&decoded).is_err() {
+        return;
+    }
+    if let Ok(canonical) = fs::canonicalize(decoded) {
+        state.insert(canonical);
+    }
 }
 
 #[cfg(test)]
@@ -170,6 +217,54 @@ mod tests {
     #[cfg(not(target_os = "ios"))]
     #[test]
     fn off_ios_resolving_a_bookmark_returns_none() {
-        assert_eq!(resolve_bookmark("anything".to_string()), Ok(None));
+        let state = AllowedPdfs::new();
+        assert_eq!(resolve_bookmark_with("anything", &state), Ok(None));
+    }
+
+    #[test]
+    fn register_resolved_bookmark_inserts_the_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let state = AllowedPdfs::new();
+
+        register_resolved_bookmark(&state, pdf.to_str().unwrap());
+
+        assert!(state.contains(&fs::canonicalize(&pdf).unwrap()));
+    }
+
+    #[test]
+    fn register_resolved_bookmark_decodes_a_file_url_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let state = AllowedPdfs::new();
+        let url = format!("file://{}", pdf.display());
+
+        register_resolved_bookmark(&state, &url);
+
+        assert!(state.contains(&fs::canonicalize(&pdf).unwrap()));
+    }
+
+    #[test]
+    fn register_resolved_bookmark_rejects_a_non_pdf_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("notes.txt");
+        fs::write(&txt, b"not a pdf").unwrap();
+        let state = AllowedPdfs::new();
+
+        register_resolved_bookmark(&state, txt.to_str().unwrap());
+
+        assert!(!state.contains(&fs::canonicalize(&txt).unwrap()));
+    }
+
+    #[test]
+    fn register_resolved_bookmark_silently_ignores_a_path_that_does_not_exist() {
+        let state = AllowedPdfs::new();
+
+        // Must not panic; there is simply nothing to register.
+        register_resolved_bookmark(&state, "/nonexistent/paper.pdf");
+
+        assert!(!state.contains(std::path::Path::new("/nonexistent/paper.pdf")));
     }
 }

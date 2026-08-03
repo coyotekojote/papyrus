@@ -4,6 +4,7 @@ import {
   PdfFileMissingError,
   pickPdfFile,
   readPdfFileWithBookmark,
+  registerPdfPath,
 } from "./files/open";
 import {
   addRecentFile,
@@ -110,6 +111,16 @@ function App() {
           throw cause;
         }
         markEnd("app:read-file");
+        try {
+          // Lets the sidecar commands (notes/annotations/clips) touch this
+          // pdf_path for the rest of the session (issue #40). Non-fatal: the
+          // read above already succeeded through plugin-fs, so a failure
+          // here must not stop the document from opening — it only means a
+          // later sidecar call on this path will fail on its own.
+          await registerPdfPath(path);
+        } catch (cause) {
+          console.warn("failed to register pdf path for sidecar access", cause);
+        }
         const renderer = await loadDefaultRenderer();
         const doc = await renderer.open(bytes);
 

@@ -15,6 +15,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
+use crate::pdf_allowlist::{self, AllowedPdfs};
+
 /// The only annotations schema version this build can read and write.
 pub const ANNOTATIONS_VERSION: u32 = 1;
 
@@ -56,6 +58,13 @@ pub enum SidecarError {
     /// A clip reference from annotations.json (or a note) does not name a file
     /// inside the sidecar folder, so it is not ours to read.
     InvalidClipPath {
+        path: String,
+    },
+    /// `pdf_path` was never registered via `register_pdf_path` or a resolved
+    /// bookmark (issue #40) — `fs:scope` only gates plugin-fs reads, so this
+    /// crate's own writes need their own check to keep a caller from putting
+    /// a `foo.papyrus/` folder next to an arbitrary `*.pdf`.
+    PathNotAllowed {
         path: String,
     },
     Parse {
@@ -459,11 +468,41 @@ pub fn sidecar_status_of(pdf_path: &Path) -> Result<SidecarStatus> {
     })
 }
 
+// --- allow-list gate (issue #40) ---
+
+/// Confirms `pdf_path` was previously registered in `state` before any
+/// sidecar file gets touched next to it, and returns the canonical path to
+/// use instead of the caller-supplied string.
+///
+/// Re-canonicalizes here rather than trusting the raw argument: the
+/// allow-list stores canonical (symlink-resolved) paths, so a path that
+/// arrives as a `file://` URL, with a redundant `..` segment, or through a
+/// symlink to the same registered file must still resolve to the same key to
+/// be recognized. A canonicalize failure (the file moved or was deleted since
+/// it was registered) is folded into the same `PathNotAllowed` error rather
+/// than a separate Io variant — either way this pdf_path is not something the
+/// caller may act on right now.
+fn ensure_allowed(state: &AllowedPdfs, pdf_path: &str) -> Result<PathBuf> {
+    let not_allowed = || SidecarError::PathNotAllowed {
+        path: pdf_path.to_string(),
+    };
+    let decoded = pdf_allowlist::decode_maybe_file_url(pdf_path);
+    let canonical = fs::canonicalize(&decoded).map_err(|_| not_allowed())?;
+    if state.contains(&canonical) {
+        Ok(canonical)
+    } else {
+        Err(not_allowed())
+    }
+}
+
 // --- Tauri commands ---
 
 #[tauri::command]
-pub fn load_annotations(pdf_path: String) -> Result<LoadedAnnotations> {
-    load_annotations_from(Path::new(&pdf_path))
+pub fn load_annotations(
+    pdf_path: String,
+    state: tauri::State<'_, AllowedPdfs>,
+) -> Result<LoadedAnnotations> {
+    load_annotations_from(&ensure_allowed(&state, &pdf_path)?)
 }
 
 #[tauri::command]
@@ -471,13 +510,15 @@ pub fn save_annotations(
     pdf_path: String,
     annotations: Annotations,
     base_modified_at_ms: Option<i64>,
+    state: tauri::State<'_, AllowedPdfs>,
 ) -> Result<i64> {
-    save_annotations_to(Path::new(&pdf_path), &annotations, base_modified_at_ms)
+    let path = ensure_allowed(&state, &pdf_path)?;
+    save_annotations_to(&path, &annotations, base_modified_at_ms)
 }
 
 #[tauri::command]
-pub fn load_notes(pdf_path: String) -> Result<LoadedNotes> {
-    load_notes_from(Path::new(&pdf_path))
+pub fn load_notes(pdf_path: String, state: tauri::State<'_, AllowedPdfs>) -> Result<LoadedNotes> {
+    load_notes_from(&ensure_allowed(&state, &pdf_path)?)
 }
 
 #[tauri::command]
@@ -485,33 +526,48 @@ pub fn save_notes(
     pdf_path: String,
     content: String,
     base_modified_at_ms: Option<i64>,
+    state: tauri::State<'_, AllowedPdfs>,
 ) -> Result<i64> {
-    save_notes_to(Path::new(&pdf_path), &content, base_modified_at_ms)
+    let path = ensure_allowed(&state, &pdf_path)?;
+    save_notes_to(&path, &content, base_modified_at_ms)
 }
 
 /// The PNG arrives base64-encoded: Tauri's IPC carries command arguments as
 /// JSON, where a byte array would become one number per pixel byte.
 #[tauri::command]
-pub fn save_clip(pdf_path: String, png_base64: String) -> Result<String> {
+pub fn save_clip(
+    pdf_path: String,
+    png_base64: String,
+    state: tauri::State<'_, AllowedPdfs>,
+) -> Result<String> {
+    let path = ensure_allowed(&state, &pdf_path)?;
     let bytes = BASE64_STANDARD
         .decode(png_base64.as_bytes())
         .map_err(|err| SidecarError::Parse {
             message: err.to_string(),
         })?;
-    save_clip_to(Path::new(&pdf_path), &bytes)
+    save_clip_to(&path, &bytes)
 }
 
 /// Returns the raw bytes (as an ArrayBuffer on the JS side), so a clip does
 /// not pay the JSON detour on the way back either.
 #[tauri::command]
-pub fn load_clip(pdf_path: String, file: String) -> Result<tauri::ipc::Response> {
-    let bytes = load_clip_from(Path::new(&pdf_path), &file)?;
+pub fn load_clip(
+    pdf_path: String,
+    file: String,
+    state: tauri::State<'_, AllowedPdfs>,
+) -> Result<tauri::ipc::Response> {
+    let path = ensure_allowed(&state, &pdf_path)?;
+    let bytes = load_clip_from(&path, &file)?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
-pub fn sidecar_status(pdf_path: String) -> Result<SidecarStatus> {
-    sidecar_status_of(Path::new(&pdf_path))
+pub fn sidecar_status(
+    pdf_path: String,
+    state: tauri::State<'_, AllowedPdfs>,
+) -> Result<SidecarStatus> {
+    sidecar_status_of(&ensure_allowed(&state, &pdf_path)?)
 }
 
 #[cfg(test)]
@@ -874,6 +930,62 @@ mod tests {
             load_clip_from(&pdf, "clips/clip-9999.png"),
             Err(SidecarError::Io { .. })
         ));
+    }
+
+    #[test]
+    fn ensure_allowed_rejects_an_unregistered_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let state = AllowedPdfs::new();
+
+        assert!(matches!(
+            ensure_allowed(&state, pdf.to_str().unwrap()),
+            Err(SidecarError::PathNotAllowed { .. })
+        ));
+    }
+
+    #[test]
+    fn ensure_allowed_rejects_a_path_that_does_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("ghost.pdf");
+        let state = AllowedPdfs::new();
+
+        assert!(matches!(
+            ensure_allowed(&state, pdf.to_str().unwrap()),
+            Err(SidecarError::PathNotAllowed { .. })
+        ));
+    }
+
+    #[test]
+    fn ensure_allowed_accepts_a_registered_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("paper.pdf");
+        fs::write(&pdf, b"%PDF-1.4").unwrap();
+        let state = AllowedPdfs::new();
+        state.insert(fs::canonicalize(&pdf).unwrap());
+
+        assert_eq!(
+            ensure_allowed(&state, pdf.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&pdf).unwrap(),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_allowed_accepts_the_registered_path_via_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("paper.pdf");
+        fs::write(&real, b"%PDF-1.4").unwrap();
+        let link = dir.path().join("alias.pdf");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let state = AllowedPdfs::new();
+        state.insert(fs::canonicalize(&real).unwrap());
+
+        assert_eq!(
+            ensure_allowed(&state, link.to_str().unwrap()).unwrap(),
+            fs::canonicalize(&real).unwrap(),
+        );
     }
 
     #[test]

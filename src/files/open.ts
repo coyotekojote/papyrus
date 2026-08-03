@@ -56,6 +56,19 @@ export async function resolveBookmark(
   }
 }
 
+/**
+ * Registers `path` with the backend's sidecar allow-list (issue #40), so
+ * `save_notes` / `save_annotations` / `save_clip` / `load_clip` on this
+ * pdf_path are permitted afterward — `fs:scope` only gates plugin-fs's own
+ * reads, not those commands' writes. A thin wrapper only: unlike
+ * {@link createBookmarkFor} and {@link resolveBookmark}, a failure here is
+ * not swallowed — it is up to the caller (see `openPath` in App.tsx) to
+ * decide how non-fatal that is.
+ */
+export async function registerPdfPath(path: string): Promise<void> {
+  await invoke<void>("register_pdf_path", { path });
+}
+
 export async function pdfFileExists(path: string): Promise<boolean> {
   try {
     return await exists(path);
