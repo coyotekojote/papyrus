@@ -24,6 +24,8 @@ const stored: Settings = {
     targetLanguage: "en",
     models: { claude: "claude-opus-5" },
   },
+  notesOutlineInsert: false,
+  notesOutlineFollow: false,
 };
 
 beforeEach(() => {
@@ -91,6 +93,33 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ translation: {} }).translation.models).toEqual(
       {},
     );
+  });
+
+  it("defaults the outline settings to on", () => {
+    expect(defaultSettings().notesOutlineInsert).toBe(true);
+    expect(defaultSettings().notesOutlineFollow).toBe(true);
+    expect(normalizeSettings({}).notesOutlineInsert).toBe(true);
+    expect(normalizeSettings({}).notesOutlineFollow).toBe(true);
+  });
+
+  it("keeps an explicit false for either outline setting", () => {
+    const settings = normalizeSettings({
+      notesOutlineInsert: false,
+      notesOutlineFollow: false,
+    });
+    expect(settings.notesOutlineInsert).toBe(false);
+    expect(settings.notesOutlineFollow).toBe(false);
+  });
+
+  it("falls back to the default for a non-boolean outline setting", () => {
+    for (const value of ["true", 0, null, undefined, {}]) {
+      expect(
+        normalizeSettings({
+          notesOutlineInsert: value,
+          notesOutlineFollow: value,
+        }).notesOutlineInsert,
+      ).toBe(true);
+    }
   });
 });
 

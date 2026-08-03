@@ -35,6 +35,10 @@ export interface Settings {
   defaultBinding: Binding;
   defaultViewMode: ViewMode;
   translation: TranslationSettings;
+  /** Insert the PDF's outline as markdown headings into an empty note (#46). */
+  notesOutlineInsert: boolean;
+  /** Move the notes cursor to the heading of the section on screen (#46). */
+  notesOutlineFollow: boolean;
 }
 
 export interface ModelSuggestion {
@@ -122,6 +126,8 @@ export function defaultSettings(): Settings {
     defaultBinding: "left",
     defaultViewMode: "single",
     translation: { provider: "claude", targetLanguage: "ja", models: {} },
+    notesOutlineInsert: true,
+    notesOutlineFollow: true,
   };
 }
 
@@ -164,6 +170,10 @@ function field(value: unknown, key: string): unknown {
   return typeof value === "object" && value !== null
     ? (value as Record<string, unknown>)[key]
     : undefined;
+}
+
+function booleanField(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
 }
 
 /** Keeps the entries naming a known provider with a usable model id. */
@@ -216,6 +226,14 @@ export function normalizeSettings(value: unknown): Settings {
           : defaults.translation.targetLanguage,
       models: normalizeModels(field(translation, "models")),
     },
+    notesOutlineInsert: booleanField(
+      field(value, "notesOutlineInsert"),
+      defaults.notesOutlineInsert,
+    ),
+    notesOutlineFollow: booleanField(
+      field(value, "notesOutlineFollow"),
+      defaults.notesOutlineFollow,
+    ),
   };
 }
 

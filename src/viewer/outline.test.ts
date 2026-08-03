@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { OutlineNode } from "../pdf";
-import { activeOutlineId, flattenOutline, visibleActiveId } from "./outline";
+import {
+  activeOutlineId,
+  flattenOutline,
+  outlineNodeTitle,
+  visibleActiveId,
+} from "./outline";
 
 function node(
   title: string,
@@ -118,6 +123,28 @@ describe("activeOutlineId", () => {
 
   it("returns null for an empty outline", () => {
     expect(activeOutlineId([], 7)).toBeNull();
+  });
+});
+
+describe("outlineNodeTitle", () => {
+  it("resolves a top-level id to its node's title", () => {
+    expect(outlineNodeTitle(tree, "0")).toBe("序章");
+    expect(outlineNodeTitle(tree, "2")).toBe("付録");
+  });
+
+  it("resolves a nested id by walking the path", () => {
+    expect(outlineNodeTitle(tree, "1.0")).toBe("前半");
+    expect(outlineNodeTitle(tree, "1.1.0")).toBe("補足");
+  });
+
+  it("returns null for an id that is out of range at any level", () => {
+    expect(outlineNodeTitle(tree, "9")).toBeNull();
+    expect(outlineNodeTitle(tree, "1.9")).toBeNull();
+    expect(outlineNodeTitle(tree, "1.0.0")).toBeNull();
+  });
+
+  it("returns null for an empty outline", () => {
+    expect(outlineNodeTitle([], "0")).toBeNull();
   });
 });
 

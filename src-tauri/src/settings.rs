@@ -146,6 +146,10 @@ pub struct Settings {
     pub default_binding: Binding,
     pub default_view_mode: ViewMode,
     pub translation: TranslationSettings,
+    /// Insert the PDF's outline as markdown headings into an empty note (#46).
+    pub notes_outline_insert: bool,
+    /// Move the notes cursor to the heading of the section on screen (#46).
+    pub notes_outline_follow: bool,
 }
 
 impl Default for Settings {
@@ -155,6 +159,8 @@ impl Default for Settings {
             default_binding: Binding::default(),
             default_view_mode: ViewMode::default(),
             translation: TranslationSettings::default(),
+            notes_outline_insert: true,
+            notes_outline_follow: true,
         }
     }
 }
@@ -232,6 +238,10 @@ pub fn parse_settings(raw: &str) -> Settings {
                     .unwrap_or_default(),
             ),
         },
+        notes_outline_insert: parsed(value_at(root.as_ref(), "notesOutlineInsert"))
+            .unwrap_or(defaults.notes_outline_insert),
+        notes_outline_follow: parsed(value_at(root.as_ref(), "notesOutlineFollow"))
+            .unwrap_or(defaults.notes_outline_follow),
     }
 }
 
@@ -250,6 +260,8 @@ pub fn normalize(settings: &Settings) -> Settings {
                 .unwrap_or(defaults.translation.target_language),
             models: models(settings.translation.models.clone()),
         },
+        notes_outline_insert: settings.notes_outline_insert,
+        notes_outline_follow: settings.notes_outline_follow,
     }
 }
 
@@ -338,6 +350,8 @@ mod tests {
                 target_language: "en-US".to_string(),
                 models: BTreeMap::from([("claude".to_string(), "claude-opus-5".to_string())]),
             },
+            notes_outline_insert: false,
+            notes_outline_follow: false,
         }
     }
 
@@ -351,6 +365,29 @@ mod tests {
         assert_eq!(settings.translation.target_language, "ja");
         // No model chosen: the translation layer picks the provider's own.
         assert!(settings.translation.models.is_empty());
+        assert!(settings.notes_outline_insert);
+        assert!(settings.notes_outline_follow);
+    }
+
+    #[test]
+    fn parse_keeps_explicit_outline_settings() {
+        let settings =
+            parse_settings(r#"{ "notesOutlineInsert": false, "notesOutlineFollow": false }"#);
+        assert!(!settings.notes_outline_insert);
+        assert!(!settings.notes_outline_follow);
+    }
+
+    #[test]
+    fn parse_falls_back_to_defaults_for_unusable_outline_settings() {
+        for raw in [
+            r#"{ "notesOutlineInsert": "false", "notesOutlineFollow": 0 }"#,
+            r#"{ "notesOutlineInsert": null, "notesOutlineFollow": null }"#,
+            r#"{}"#,
+        ] {
+            let settings = parse_settings(raw);
+            assert!(settings.notes_outline_insert, "raw: {raw}");
+            assert!(settings.notes_outline_follow, "raw: {raw}");
+        }
     }
 
     #[test]

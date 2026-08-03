@@ -82,6 +82,28 @@ export function activeOutlineId(
 }
 
 /**
+ * The title of the node at a path-derived id (e.g. `"1.1.0"`), or null when
+ * the id no longer resolves — the outline changed shape, or was never there.
+ * Used to follow the reader's current section into the notes panel (#46).
+ */
+export function outlineNodeTitle(
+  nodes: readonly OutlineNode[],
+  id: string,
+): string | null {
+  let items: readonly OutlineNode[] = nodes;
+  let node: OutlineNode | null = null;
+
+  for (const part of id.split(".")) {
+    const index = Number(part);
+    node = items[index] ?? null;
+    if (!node) return null;
+    items = node.children;
+  }
+
+  return node?.title ?? null;
+}
+
+/**
  * Which row to highlight for an active node. When the active node itself is
  * hidden inside a collapsed parent, the highlight moves up to the nearest
  * ancestor that is on screen, so the reader still sees where they are.

@@ -13,6 +13,10 @@ import {
   type NormalizedRect,
 } from "../files/sidecar";
 import { NotesPanel } from "../notes/NotesPanel";
+import {
+  formatOutlineHeadings,
+  outlineHeadingTitle,
+} from "../notes/outline-headings";
 import { useNotes } from "../notes/use-notes";
 import type { OutlineNode, PageSize, PdfDocumentHandle } from "../pdf";
 import {
@@ -23,6 +27,7 @@ import {
 import { TranslationPanel } from "../translation/TranslationPanel";
 import { useTranslation } from "../translation/use-translation";
 import { HighlightsPanel } from "./HighlightsPanel";
+import { activeOutlineId, outlineNodeTitle } from "./outline";
 import { OutlineSidebar } from "./OutlineSidebar";
 import { PageCanvas } from "./PageCanvas";
 import {
@@ -156,6 +161,10 @@ export interface PdfViewerProps {
    */
   defaultBinding?: Binding;
   defaultViewMode?: ViewMode;
+  /** Insert the PDF's outline as markdown headings into an empty note (#46). */
+  notesOutlineInsert?: boolean;
+  /** Move the notes cursor to the heading of the section on screen (#46). */
+  notesOutlineFollow?: boolean;
   onClose: () => void;
   onOpenSettings?: () => void;
 }
@@ -230,6 +239,8 @@ export function PdfViewer({
   fileName,
   defaultBinding = "left",
   defaultViewMode = "single",
+  notesOutlineInsert = true,
+  notesOutlineFollow = true,
   onClose,
   onOpenSettings,
 }: PdfViewerProps) {
@@ -706,10 +717,14 @@ export function PdfViewer({
     [goToSpread, spreads],
   );
 
-  // Fetched lazily: a document the reader never opens the sidebar for should
-  // not pay for resolving every bookmark destination.
+  // Fetched lazily: a document the reader never opens the sidebar for, and
+  // has both outline settings off for, should not pay for resolving every
+  // bookmark destination. `getOutline()` is memoized on the handle, so the
+  // notes settings wanting it early costs nothing once the sidebar is opened
+  // too.
   useEffect(() => {
-    if (!sidebarOpen || outline !== null) return;
+    const wanted = sidebarOpen || notesOutlineInsert || notesOutlineFollow;
+    if (!wanted || outline !== null) return;
     let cancelled = false;
     void doc
       .getOutline()
@@ -722,7 +737,37 @@ export function PdfViewer({
     return () => {
       cancelled = true;
     };
-  }, [doc, sidebarOpen, outline]);
+  }, [doc, sidebarOpen, outline, notesOutlineInsert, notesOutlineFollow]);
+
+  /** Guards the one-time default insertion below against firing twice. */
+  const outlineInsertedRef = useRef(false);
+
+  // Default outline insertion (#46): once per document, as soon as both the
+  // note and the outline are in, and only into a note that is still empty —
+  // `initializeContent` itself refuses anything else.
+  useEffect(() => {
+    if (!notesOutlineInsert) return;
+    if (outlineInsertedRef.current) return;
+    if (!notes.loaded || outline === null) return;
+    outlineInsertedRef.current = true;
+    if (outline.length === 0) return;
+    notes.initializeContent(formatOutlineHeadings(outline));
+  }, [notesOutlineInsert, notes, outline]);
+
+  /** The heading of the section the reader is currently on, for the notes
+   * panel to move its cursor to (#46). Null when following is off, the
+   * outline has not loaded, or the reader is still before the first
+   * bookmark. */
+  const followHeading = useMemo(() => {
+    if (!notesOutlineFollow || outline === null) return null;
+    const activeId = activeOutlineId(outline, currentPage);
+    if (activeId === null) return null;
+    const title = outlineNodeTitle(outline, activeId);
+    // Normalized the same way `formatOutlineHeadings` wrote it — otherwise a
+    // title with a line break, run of spaces, or no text at all would never
+    // match the heading actually sitting in the note.
+    return title === null ? null : outlineHeadingTitle(title);
+  }, [notesOutlineFollow, outline, currentPage]);
 
   const runZoomCommand = useCallback((command: ZoomCommand) => {
     setZoom((current) => applyZoomCommand(current, command));
@@ -1603,6 +1648,7 @@ export function PdfViewer({
               status={notes.status}
               error={notes.error ?? noteError}
               conflict={notes.conflict}
+              followHeading={followHeading}
               onChange={notes.setContent}
               onKeepLocal={notes.keepLocal}
               onTakeDisk={notes.takeDisk}

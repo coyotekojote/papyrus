@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Clip } from "../files/sidecar";
 import { MarkdownView } from "./MarkdownView";
+import { findHeadingOffset } from "./outline-headings";
 import { useClipImages } from "./use-clip-images";
 import type { NotesStatus } from "./use-notes";
 
@@ -27,6 +28,12 @@ export interface NotesPanelProps {
   error: string | null;
   /** The note as it is on disk, while a conflict is waiting to be resolved. */
   conflict: string | null;
+  /**
+   * Title of the section the reader is currently on (issue #46), or null
+   * when there is none or the setting is off. A change moves the editor's
+   * cursor to the matching heading, unless the reader is mid-edit.
+   */
+  followHeading: string | null;
   onChange: (next: string) => void;
   onKeepLocal: () => void;
   onTakeDisk: () => void;
@@ -46,6 +53,7 @@ export function NotesPanel({
   status,
   error,
   conflict,
+  followHeading,
   onChange,
   onKeepLocal,
   onTakeDisk,
@@ -54,6 +62,45 @@ export function NotesPanel({
   const clipFiles = useMemo(() => clips.map((clip) => clip.file), [clips]);
   // Clips are only read for the preview: the editor shows the markdown itself.
   const images = useClipImages(pdfPath, clipFiles, mode === "preview");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /**
+   * The `followHeading` the caret was last moved to, so a `content` change
+   * alone — a quote or clip inserted elsewhere in the note, a keystroke —
+   * never re-triggers the jump. Only an actual change of section does.
+   * Cleared on leaving edit mode, so returning to it re-applies whatever
+   * `followHeading` is current at that point.
+   */
+  const appliedFollowHeadingRef = useRef<string | null>(null);
+
+  // Follows the reader's current section (#46): moves the caret to the
+  // matching heading when it changes. Left alone while the reader is
+  // actually typing — `document.activeElement` is the one live signal for
+  // that — so the cursor is never yanked out from under a keystroke. Focus
+  // itself is never taken: this only helps a reader who is already looking
+  // at the editor, and stealing focus would disrupt everything else.
+  useEffect(() => {
+    if (mode !== "edit") {
+      appliedFollowHeadingRef.current = null;
+      return;
+    }
+    if (followHeading === null) return;
+    if (followHeading === appliedFollowHeadingRef.current) return;
+    const textarea = textareaRef.current;
+    if (!textarea || document.activeElement === textarea) return;
+
+    const offset = findHeadingOffset(content, followHeading);
+    if (offset === null) return;
+    appliedFollowHeadingRef.current = followHeading;
+
+    textarea.setSelectionRange(offset, offset);
+    // Best-effort scroll: no line-wrap-aware layout is available here, so
+    // the position is estimated from the line count and the box's own
+    // average line height rather than measured precisely.
+    const totalLines = content.split("\n").length;
+    const lineIndex = content.slice(0, offset).split("\n").length - 1;
+    const lineHeight = textarea.scrollHeight / totalLines;
+    textarea.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight);
+  }, [followHeading, mode, content]);
 
   return (
     <div className="notes">
@@ -116,6 +163,7 @@ export function NotesPanel({
 
       {mode === "edit" ? (
         <textarea
+          ref={textareaRef}
           className="notes__editor"
           aria-label="メモ (markdown)"
           value={content}

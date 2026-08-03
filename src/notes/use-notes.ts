@@ -48,6 +48,14 @@ export interface UseNotesResult {
   /** The note as it is on disk, while a conflict is waiting to be resolved. */
   conflict: string | null;
   setContent(next: string): void;
+  /**
+   * Sets the content once, without marking it dirty or scheduling a save
+   * (issue #46: the default outline insertion). Only takes effect while the
+   * note is loaded, has no conflict pending, and is still empty — anything
+   * else means either it is not safe to touch yet or there is already
+   * something here the reader wrote or a previous insertion produced.
+   */
+  initializeContent(text: string): void;
   /** Appends a highlight to the note as a markdown quote, with its page. */
   insertQuote(highlight: Highlight): void;
   /** Appends a clip to the note as a markdown image, relative to the sidecar. */
@@ -266,6 +274,21 @@ export function useNotes(pdfPath: string): UseNotesResult {
     error,
     conflict,
     setContent: useCallback((next: string) => edit(() => next), [edit]),
+    initializeContent: useCallback((text: string) => {
+      const session = sessionRef.current;
+      // Same refusals as `edit`: before the load, or mid-conflict, nothing
+      // here is safe to overwrite. Unlike `edit`, an existing note (even one
+      // only whitespace away from empty) is also left alone — this is a
+      // one-time default, not something the reader asked to happen.
+      if (!session.loaded || session.conflict) return;
+      if (session.content.trim() !== "") return;
+      session.content = text;
+      setContentState(text);
+      // Deliberately no `setStatus`/`scheduleSave`: the file on disk is
+      // still empty, and writing it now — just because a default was shown —
+      // would create notes.md for a PDF the reader never actually annotated.
+      // Autosave only starts once a real edit calls `edit()`.
+    }, []),
     insertQuote: useCallback(
       (highlight: Highlight) =>
         edit((current) =>
