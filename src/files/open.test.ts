@@ -75,19 +75,22 @@ describe("readPdfFileWithBookmark", () => {
     exists.mockResolvedValue(true);
     readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
 
-    const bytes = await readPdfFileWithBookmark("/Papers/attention.pdf");
+    const result = await readPdfFileWithBookmark("/Papers/attention.pdf");
 
     expect(invoke).not.toHaveBeenCalled();
     expect(readFile).toHaveBeenCalledWith("/Papers/attention.pdf");
-    expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
+    expect(result).toEqual({
+      bytes: new Uint8Array([1, 2, 3]),
+      path: "/Papers/attention.pdf",
+    });
   });
 
-  it("reads from the resolved bookmark location when resolution succeeds", async () => {
+  it("reads from the resolved bookmark location when resolution succeeds, returning that path", async () => {
     invoke.mockResolvedValue("file:///private/var/mobile/attention.pdf");
     exists.mockResolvedValue(true);
     readFile.mockResolvedValue(new Uint8Array([9]));
 
-    const bytes = await readPdfFileWithBookmark(
+    const result = await readPdfFileWithBookmark(
       "/Papers/attention.pdf",
       "Ym9va21hcms=",
     );
@@ -96,7 +99,10 @@ describe("readPdfFileWithBookmark", () => {
       "file:///private/var/mobile/attention.pdf",
     );
     expect(readFile).toHaveBeenCalledTimes(1);
-    expect(bytes).toEqual(new Uint8Array([9]));
+    expect(result).toEqual({
+      bytes: new Uint8Array([9]),
+      path: "file:///private/var/mobile/attention.pdf",
+    });
   });
 
   it("falls back to the saved path when resolution returns null", async () => {
@@ -104,13 +110,16 @@ describe("readPdfFileWithBookmark", () => {
     exists.mockResolvedValue(true);
     readFile.mockResolvedValue(new Uint8Array([4]));
 
-    const bytes = await readPdfFileWithBookmark(
+    const result = await readPdfFileWithBookmark(
       "/Papers/attention.pdf",
       "Ym9va21hcms=",
     );
 
     expect(readFile).toHaveBeenCalledWith("/Papers/attention.pdf");
-    expect(bytes).toEqual(new Uint8Array([4]));
+    expect(result).toEqual({
+      bytes: new Uint8Array([4]),
+      path: "/Papers/attention.pdf",
+    });
   });
 
   it("falls back to the saved path when the resolved location is missing", async () => {
@@ -120,14 +129,17 @@ describe("readPdfFileWithBookmark", () => {
     );
     readFile.mockResolvedValue(new Uint8Array([7]));
 
-    const bytes = await readPdfFileWithBookmark(
+    const result = await readPdfFileWithBookmark(
       "/Papers/attention.pdf",
       "Ym9va21hcms=",
     );
 
     expect(readFile).toHaveBeenCalledWith("/Papers/attention.pdf");
     expect(readFile).toHaveBeenCalledTimes(1);
-    expect(bytes).toEqual(new Uint8Array([7]));
+    expect(result).toEqual({
+      bytes: new Uint8Array([7]),
+      path: "/Papers/attention.pdf",
+    });
   });
 
   it("still fails with PdfFileMissingError when neither location has the file", async () => {
@@ -137,6 +149,18 @@ describe("readPdfFileWithBookmark", () => {
     await expect(
       readPdfFileWithBookmark("/Papers/attention.pdf", "Ym9va21hcms="),
     ).rejects.toBeInstanceOf(PdfFileMissingError);
+  });
+
+  it("propagates a non-missing error from the resolved location instead of falling back", async () => {
+    invoke.mockResolvedValue("file:///private/var/mobile/moved.pdf");
+    exists.mockImplementation((path: string) =>
+      Promise.resolve(path === "file:///private/var/mobile/moved.pdf"),
+    );
+    readFile.mockRejectedValue(new Error("permission denied"));
+
+    await expect(
+      readPdfFileWithBookmark("/Papers/attention.pdf", "Ym9va21hcms="),
+    ).rejects.toThrow("permission denied");
   });
 });
 
