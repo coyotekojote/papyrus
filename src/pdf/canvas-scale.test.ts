@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MAX_CANVAS_PIXELS, backingStoreRatio } from "./canvas-scale";
+import {
+  MAX_CANVAS_PIXELS,
+  PREVIEW_MAX_PIXELS,
+  backingStoreRatio,
+  previewScale,
+} from "./canvas-scale";
 
 /** US Letter at 72dpi, the size pdf.js reports at scale 1. */
 const LETTER = { width: 612, height: 792 };
@@ -88,5 +93,118 @@ describe("backingStoreRatio", () => {
 
     expect(ratio).toBe(1);
     expect(1000 * ratio * (1000 * ratio)).toBeLessThanOrEqual(1_000_000);
+  });
+});
+
+/** Backing-store pixel count `previewScale`'s return value would itself
+ * produce, mirroring how a caller re-renders at that scale: the CSS size
+ * shrinks by the same factor the scale did, then goes through the renderer's
+ * own `backingStoreRatio` exactly like a full render would. */
+function previewBackingPixels(
+  scale: number,
+  cssWidth: number,
+  cssHeight: number,
+  devicePixelRatio: number,
+  maxPixels?: number,
+) {
+  const preview = previewScale(
+    scale,
+    cssWidth,
+    cssHeight,
+    devicePixelRatio,
+    maxPixels,
+  );
+  if (preview === null) return null;
+
+  const factor = preview / scale;
+  const previewWidth = cssWidth * factor;
+  const previewHeight = cssHeight * factor;
+  const ratio = backingStoreRatio(
+    previewWidth,
+    previewHeight,
+    devicePixelRatio,
+  );
+  return previewWidth * ratio * (previewHeight * ratio);
+}
+
+describe("previewScale", () => {
+  it("returns null when the full render lands exactly on the budget", () => {
+    // 1024x1024 at dpr 1 is exactly PREVIEW_MAX_PIXELS worth of backing
+    // pixels — no cap in play, so nothing a preview would save.
+    expect(previewScale(1, 1024, 1024, 1)).toBeNull();
+  });
+
+  it("returns a scale once the full render exceeds the budget by even one pixel row", () => {
+    const result = previewScale(1, 1024, 1025, 1);
+
+    expect(result).not.toBeNull();
+    expect(result).toBeGreaterThan(0);
+    expect(result).toBeLessThan(1);
+  });
+
+  it("rounds down to (not above) the pixel budget rather than a fixed fraction of scale", () => {
+    // A large page, comfortably below MAX_CANVAS_PIXELS on its own, at dpr 1.
+    const pixels = previewBackingPixels(2, 4000, 4000, 1);
+
+    expect(pixels).not.toBeNull();
+    expect(pixels as number).toBeLessThanOrEqual(PREVIEW_MAX_PIXELS);
+    // "near" the budget, not some much smaller fixed-ratio result.
+    expect(pixels as number).toBeGreaterThan(PREVIEW_MAX_PIXELS * 0.99);
+  });
+
+  it("accounts for a device pixel ratio above 1", () => {
+    const scale = 1;
+    const cssWidth = 612;
+    const cssHeight = 792;
+    const dpr = 2;
+
+    const result = previewScale(scale, cssWidth, cssHeight, dpr);
+    expect(result).not.toBeNull();
+    expect(result as number).toBeLessThan(scale);
+
+    const pixels = previewBackingPixels(scale, cssWidth, cssHeight, dpr);
+    expect(pixels as number).toBeLessThanOrEqual(PREVIEW_MAX_PIXELS);
+    expect(pixels as number).toBeGreaterThan(PREVIEW_MAX_PIXELS * 0.99);
+  });
+
+  it("still lands near the pixel budget once extreme zoom makes the full render hit MAX_CANVAS_PIXELS", () => {
+    // Same Letter-at-6x-zoom, dpr-2 case that pushes backingStoreRatio's own
+    // ratio below 1 (see canvas-scale.test.ts's "shrinks below 1" case) —
+    // the full render here saturates at MAX_CANVAS_PIXELS regardless of dpr.
+    const scale = 6;
+    const cssWidth = LETTER.width * scale;
+    const cssHeight = LETTER.height * scale;
+    const dpr = 2;
+    expect(cssWidth * cssHeight).toBeGreaterThan(MAX_CANVAS_PIXELS);
+
+    const result = previewScale(scale, cssWidth, cssHeight, dpr);
+    expect(result).not.toBeNull();
+    expect(result as number).toBeGreaterThan(0);
+    expect(result as number).toBeLessThan(scale);
+
+    const pixels = previewBackingPixels(scale, cssWidth, cssHeight, dpr);
+    expect(pixels as number).toBeLessThanOrEqual(PREVIEW_MAX_PIXELS);
+    expect(pixels as number).toBeGreaterThan(PREVIEW_MAX_PIXELS * 0.99);
+  });
+
+  it("returns null for a degenerate CSS area", () => {
+    expect(previewScale(1, 0, 792, 2)).toBeNull();
+    expect(previewScale(1, 612, 0, 2)).toBeNull();
+    expect(previewScale(1, Number.NaN, 792, 2)).toBeNull();
+  });
+
+  it("returns null for a non-finite or non-positive scale", () => {
+    expect(previewScale(Number.NaN, 4000, 4000, 1)).toBeNull();
+    expect(previewScale(0, 4000, 4000, 1)).toBeNull();
+    expect(previewScale(-1, 4000, 4000, 1)).toBeNull();
+    expect(previewScale(Number.POSITIVE_INFINITY, 4000, 4000, 1)).toBeNull();
+  });
+
+  it("honours a caller-supplied budget", () => {
+    const result = previewScale(1, 4000, 4000, 1, 1_000_000);
+
+    expect(result).not.toBeNull();
+    const pixels = previewBackingPixels(1, 4000, 4000, 1, 1_000_000);
+    expect(pixels as number).toBeLessThanOrEqual(1_000_000);
   });
 });

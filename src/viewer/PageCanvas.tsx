@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { Highlight } from "../files/sidecar";
 import type { PdfDocumentHandle } from "../pdf";
+import { previewScale } from "../pdf/canvas-scale";
+import { clearStart, markEnd, markStart } from "../perf/marks";
 import { highlightColorCss } from "./highlights";
 import type { PageRenderCache } from "./page-cache";
 import type { RenderPriority, RenderQueue } from "./render-queue";
@@ -62,36 +64,150 @@ export function PageCanvas({
     }
 
     const controller = new AbortController();
-    const canvas = document.createElement("canvas");
-    canvas.className = "page__canvas";
-    host.replaceChildren(canvas);
     setError(null);
 
-    const render = (signal: AbortSignal) =>
-      doc.renderPage(pageNumber, { scale, canvas, signal }).then(() => {
-        if (signal.aborted) return;
-        cache.set(pageNumber, scale, canvas);
+    // Two-stage rendering (issue #37) only ever applies to the page actually
+    // on screen (`priority === "visible"`) going through a queue at all —
+    // an overscan/prefetch page competing to show a *blurry* stand-in ahead
+    // of some other page's full render would be a net loss, and thumbnails
+    // (no `queue`) have no such urgency to begin with. Narrowed into its own
+    // variable (rather than re-checking `queue` below) so TypeScript knows
+    // it is defined everywhere the two-stage branch actually uses it.
+    const twoStageQueue: RenderQueue | null =
+      queue && priority === "visible" ? queue : null;
+    const pScale = twoStageQueue
+      ? previewScale(scale, width, height, window.devicePixelRatio ?? 1)
+      : null;
+
+    if (!twoStageQueue || pScale === null) {
+      const canvas = document.createElement("canvas");
+      canvas.className = "page__canvas";
+      host.replaceChildren(canvas);
+
+      const render = (signal: AbortSignal) =>
+        doc.renderPage(pageNumber, { scale, canvas, signal }).then(() => {
+          if (signal.aborted) return;
+          cache.set(pageNumber, scale, canvas);
+        });
+
+      // Without a queue (thumbnails, still) the render starts immediately,
+      // as before #35. With one, `priority` decides whether this page's
+      // turn at the (single-slot) worker comes before or after whatever
+      // else is queued — see render-queue.ts for why that matters.
+      const task = queue
+        ? queue.schedule(priority, render, controller.signal)
+        : render(controller.signal);
+
+      task.catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setError(cause instanceof Error ? cause.message : String(cause));
       });
 
-    // Without a queue (thumbnails, still) the render starts immediately, as
-    // before #35. With one, `priority` decides whether this page's turn at
-    // the (single-slot) worker comes before or after whatever else is
-    // queued — see render-queue.ts for why that matters.
-    const task = queue
-      ? queue.schedule(priority, render, controller.signal)
-      : render(controller.signal);
+      return () => controller.abort();
+    }
 
-    task.catch((cause: unknown) => {
+    // Two-stage path: a low-resolution preview goes up immediately (at the
+    // "preview" priority, which always dequeues ahead of the full render —
+    // see render-queue.ts), while the full-resolution render happens
+    // offscreen and swaps in only once it is ready. The preview stays
+    // mounted until that swap so the reader never sees a blank canvas in
+    // between (issue #37).
+    const previewMark = `viewer:preview-shown:${pageNumber}`;
+    const fullMark = `viewer:full-shown:${pageNumber}`;
+    markStart(previewMark);
+    markStart(fullMark);
+
+    const previewCanvas = document.createElement("canvas");
+    previewCanvas.className = "page__canvas";
+    host.replaceChildren(previewCanvas);
+
+    const renderPreview = (signal: AbortSignal) =>
+      // Wrapped in `Promise.resolve().then(...)` rather than calling
+      // `doc.renderPage` directly: a renderer that throws synchronously
+      // (instead of returning a rejected promise) would otherwise bypass
+      // the `.catch` below entirely, leaking `previewMark` unmeasured.
+      Promise.resolve()
+        .then(() =>
+          doc.renderPage(pageNumber, {
+            scale: pScale,
+            canvas: previewCanvas,
+            signal,
+          }),
+        )
+        .then(() => {
+          if (signal.aborted) return;
+          // `renderPage` sets the canvas's own CSS size to match `pScale`;
+          // stretch it back out to the page's real display size now that
+          // the pixels it needs are actually in place.
+          previewCanvas.style.width = `${width}px`;
+          previewCanvas.style.height = `${height}px`;
+          markEnd(previewMark);
+        })
+        .catch(() => {
+          // A failed preview is not fatal — the full render below is what
+          // actually matters, and it reports its own failure if it fails.
+          // Still clear the start mark, though: without this, a preview
+          // that never reaches its `then` leaves an unmeasured start mark
+          // sitting around until cleanup (or forever, if cleanup never
+          // fires for this signal — e.g. `run` itself throwing before
+          // `signal` is ever aborted).
+          clearStart(previewMark);
+        });
+
+    const fullCanvas = document.createElement("canvas");
+    fullCanvas.className = "page__canvas";
+
+    const renderFull = (signal: AbortSignal) =>
+      // Same reasoning as `renderPreview`'s wrapper above: a synchronous
+      // throw from `doc.renderPage` must still reach `fullTask`'s `.catch`
+      // below (which clears `fullMark` and reports the error), not escape
+      // as an unhandled exception.
+      Promise.resolve()
+        .then(() =>
+          doc.renderPage(pageNumber, { scale, canvas: fullCanvas, signal }),
+        )
+        .then(() => {
+          if (signal.aborted) return;
+          cache.set(pageNumber, scale, fullCanvas);
+          host.replaceChildren(fullCanvas);
+          markEnd(fullMark);
+        });
+
+    // `renderPreview` above already swallows its own rejection, so this
+    // never actually rejects in practice — but `schedule`'s own promise
+    // rejects too if `run` throws synchronously (see render-queue.ts), and
+    // an unawaited, unhandled rejection there would surface as a console
+    // warning nobody is listening for. Nothing here needs the result.
+    twoStageQueue
+      .schedule("preview", renderPreview, controller.signal)
+      .catch(() => {});
+    const fullTask = twoStageQueue.schedule(
+      priority,
+      renderFull,
+      controller.signal,
+    );
+
+    fullTask.catch((cause: unknown) => {
+      // Unconditional — unlike the `setError` below, this is safe (and
+      // correct) to run even after an abort: it is a no-op if `fullMark`
+      // was already cleared or measured, and otherwise is exactly the
+      // cleanup that would be missed if `renderFull` threw synchronously
+      // before ever reaching its own `then`.
+      clearStart(fullMark);
       if (controller.signal.aborted) return;
       setError(cause instanceof Error ? cause.message : String(cause));
     });
 
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      clearStart(previewMark);
+      clearStart(fullMark);
+    };
     // `priority` is intentionally a dependency: a change (an overscan page
     // becoming the visible one, say) must abort whatever this effect queued
     // last time and re-schedule at the new priority. The cache check above
     // makes that a no-op — never a second render — once the page is warm.
-  }, [doc, cache, pageNumber, scale, queue, priority]);
+  }, [doc, cache, pageNumber, scale, width, height, queue, priority]);
 
   // The text layer is cheap relative to the canvas and never cached: it is
   // rebuilt whenever the page mounts or the zoom changes.
