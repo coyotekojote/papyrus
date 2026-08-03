@@ -90,21 +90,31 @@ describe("detectDictationPlatform", () => {
 });
 
 describe("dictationHint", () => {
-  it("tells macOS users about the fn-key shortcut and Edit menu", () => {
+  it("tells macOS users about the shortcut set in System Settings and the Edit menu", () => {
     const hint = dictationHint("macos");
 
     expect(hint).toContain("fn キーを2回押す");
     expect(hint).toContain("編集 > 音声入力を開始");
   });
 
-  it("notes that the fn-key shortcut only works once dictation is turned on", () => {
-    // The fn-key shortcut does nothing if the user has never enabled
-    // dictation, so the hint must not read as an unconditional promise.
+  it("points at System Settings as the source of truth for the shortcut", () => {
+    // fn is not always bound to dictation (e.g. it may be reassigned to
+    // input source switching), so "fn 2回" must read as the default, not a
+    // promise — the actual shortcut is whatever System Settings has set.
     const hint = dictationHint("macos");
 
+    expect(hint).toContain("システム設定 > キーボード > 音声入力 をオンにし");
     expect(hint).toContain(
-      "システム設定 > キーボード で音声入力をオンにしておく必要があります",
+      "そこで設定したショートカット（既定は fn キーを2回押す）",
     );
+  });
+
+  it("does not assert the Edit menu item is always present", () => {
+    // Some environments don't show "編集 > 音声入力を開始" at all, so the
+    // hint must condition on it rather than promise it unconditionally.
+    const hint = dictationHint("macos");
+
+    expect(hint).toContain("表示されていれば");
   });
 
   it("tells iOS users about the keyboard microphone button", () => {

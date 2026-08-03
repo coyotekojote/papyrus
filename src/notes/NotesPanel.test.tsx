@@ -66,7 +66,7 @@ describe("NotesPanel dictation button", () => {
     expect(button).toHaveAttribute("aria-expanded", "true");
     const editor = screen.getByLabelText("メモ (markdown)");
     expect(editor).toHaveFocus();
-    const hint = screen.getByText(/fn キーを2回押すと音声入力が始まります/);
+    const hint = screen.getByText(/fn キーを2回押す/);
     expect(hint.id).toBe(button.getAttribute("aria-controls"));
   });
 
