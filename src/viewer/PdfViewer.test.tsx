@@ -1971,7 +1971,7 @@ describe("PdfViewer", () => {
         );
 
         await user.click(screen.getByRole("button", { name: "目次" }));
-        await user.click(screen.getByRole("button", { name: "本論 3" }));
+        await user.click(screen.getByRole("button", { name: "本論3" }));
 
         await waitFor(() => {
           const expected = editor.value.indexOf("# 本論");
