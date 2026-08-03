@@ -37,13 +37,27 @@ vi.mock("./pdf", async (importActual) => {
 vi.mock("./viewer/PdfViewer", () => ({
   PdfViewer: ({
     pageSizes,
+    initialPage,
+    onPageChange,
     onClose,
   }: {
     pageSizes: readonly unknown[];
+    initialPage?: number;
+    onPageChange?: (page: number) => void;
     onClose: () => void;
   }) => (
     <div role="region" aria-label="PDFページ">
       <span>page-sizes-count:{pageSizes.length}</span>
+      <span>initial-page:{initialPage ?? "none"}</span>
+      {/* Stands in for the reader turning pages (issue #43): fires
+          `onPageChange` the same way the real viewer would once it settles
+          on a new page. */}
+      <button type="button" onClick={() => onPageChange?.(5)}>
+        go to page 5
+      </button>
+      <button type="button" onClick={() => onPageChange?.(9)}>
+        go to page 9
+      </button>
       <button type="button" onClick={onClose}>
         ← ライブラリ
       </button>
@@ -104,12 +118,15 @@ function seedRecentFiles(files: RecentFile[]) {
 
 /**
  * Renders the app and lets the settings read at startup settle, so no state
- * update lands after the test has finished.
+ * update lands after the test has finished. Returns the render result (in
+ * particular `unmount`) for tests that need to tear the app down themselves.
  */
 async function renderApp() {
+  let utils!: ReturnType<typeof render>;
   await act(async () => {
-    render(<App />);
+    utils = render(<App />);
   });
+  return utils;
 }
 
 function storedRecentFiles(): RecentFile[] {
@@ -240,6 +257,258 @@ describe("App start screen", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
       expect(getPageSizeCalls.length).toBe(countBeforeClose);
+    });
+  });
+
+  describe("restoring the last page (issue #43)", () => {
+    beforeEach(() => {
+      // Same reasoning as the progressive-open tests above: the grid view's
+      // covers open their own document through this same mocked renderer,
+      // which would pollute these tests' assertions about what App itself
+      // saved to storage.
+      window.localStorage.setItem(LIBRARY_VIEW_MODE_STORAGE_KEY, "list");
+      exists.mockResolvedValue(true);
+      readFile.mockResolvedValue(new Uint8Array([1, 2, 3]));
+    });
+
+    /**
+     * Wires up a fake renderer that opens a `pageCount`-page document, with
+     * every page size resolving right away — these tests are about what App
+     * does with the opened document, not about the progressive load itself
+     * (already covered above), so nothing here should stay gated.
+     */
+    function mockRenderer(pageCount: number) {
+      const { doc } = fakePdfDocument(pageCount, { delayAfter: pageCount });
+      const renderer: PdfRenderer = {
+        id: "fake",
+        open: vi.fn(async () => doc),
+      };
+      loadDefaultRenderer.mockResolvedValue(renderer);
+    }
+
+    it("passes the stored lastPage as the viewer's initialPage", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([
+        {
+          path: "/Papers/paper.pdf",
+          name: "paper.pdf",
+          openedAt: 1,
+          lastPage: 15,
+        },
+      ]);
+      mockRenderer(20);
+
+      await renderApp();
+      await user.click(
+        screen.getByRole("button", { name: "paper.pdf を開く" }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("initial-page:15")).toBeInTheDocument();
+      });
+    });
+
+    it("clamps a stored lastPage beyond the document's page count", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([
+        {
+          path: "/Papers/paper.pdf",
+          name: "paper.pdf",
+          openedAt: 1,
+          lastPage: 999,
+        },
+      ]);
+      mockRenderer(20);
+
+      await renderApp();
+      await user.click(
+        screen.getByRole("button", { name: "paper.pdf を開く" }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("initial-page:20")).toBeInTheDocument();
+      });
+    });
+
+    it("passes no initialPage when the entry has no stored lastPage", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([
+        { path: "/Papers/paper.pdf", name: "paper.pdf", openedAt: 1 },
+      ]);
+      mockRenderer(20);
+
+      await renderApp();
+      await user.click(
+        screen.getByRole("button", { name: "paper.pdf を開く" }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("initial-page:none")).toBeInTheDocument();
+      });
+    });
+
+    it("saves the current page after a debounce, without touching openedAt or order", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([
+        { path: "/Papers/a.pdf", name: "a.pdf", openedAt: 1 },
+        {
+          path: "/Papers/b.pdf",
+          name: "b.pdf",
+          openedAt: 2,
+          lastPage: 3,
+        },
+      ]);
+      mockRenderer(20);
+
+      await renderApp();
+      await user.click(screen.getByRole("button", { name: "b.pdf を開く" }));
+      await screen.findByRole("region", { name: "PDFページ" });
+
+      // `openPath` itself already stamped a fresh `openedAt` (unrelated to
+      // this feature) and moved b.pdf to the head via `addRecentFile`; what
+      // this test checks is that the debounced page save does not disturb
+      // either on top of that.
+      const openedAt = storedRecentFiles().find(
+        (f) => f.path === "/Papers/b.pdf",
+      )?.openedAt;
+
+      await user.click(screen.getByRole("button", { name: "go to page 5" }));
+      // Still mid-debounce: the stored value has not moved yet.
+      expect(
+        storedRecentFiles().find((f) => f.path === "/Papers/b.pdf")?.lastPage,
+      ).toBe(3);
+
+      await waitFor(() => {
+        expect(
+          storedRecentFiles().find((f) => f.path === "/Papers/b.pdf")?.lastPage,
+        ).toBe(5);
+      });
+
+      const saved = storedRecentFiles();
+      expect(saved.map((f) => f.path)).toEqual([
+        "/Papers/b.pdf",
+        "/Papers/a.pdf",
+      ]);
+      expect(saved.find((f) => f.path === "/Papers/b.pdf")).toMatchObject({
+        lastPage: 5,
+        openedAt,
+      });
+    });
+
+    it("collapses several fast page changes into a single write of the latest page", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([{ path: "/Papers/a.pdf", name: "a.pdf", openedAt: 1 }]);
+      mockRenderer(20);
+
+      await renderApp();
+      await user.click(screen.getByRole("button", { name: "a.pdf を開く" }));
+      await screen.findByRole("region", { name: "PDFページ" });
+
+      // Spied on the prototype, not the instance: jsdom's `localStorage` is a
+      // Proxy whose own-property assignment silently no-ops, so `vi.spyOn`
+      // has to target where `setItem` actually lives to see the calls.
+      const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
+      setItemSpy.mockClear();
+
+      // Two page changes in quick succession, with no wait between them —
+      // the second must reset the debounce rather than queue a second write
+      // for the first.
+      await user.click(screen.getByRole("button", { name: "go to page 5" }));
+      await user.click(screen.getByRole("button", { name: "go to page 9" }));
+
+      await waitFor(() => {
+        expect(
+          storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
+        ).toBe(9);
+      });
+      const recentFilesWrites = setItemSpy.mock.calls.filter(
+        ([key]) => key === RECENT_FILES_STORAGE_KEY,
+      );
+      expect(recentFilesWrites).toHaveLength(1);
+      setItemSpy.mockRestore();
+    });
+
+    it("flushes the pending page immediately when the document is closed", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([{ path: "/Papers/a.pdf", name: "a.pdf", openedAt: 1 }]);
+      mockRenderer(20);
+
+      await renderApp();
+      await user.click(screen.getByRole("button", { name: "a.pdf を開く" }));
+      await screen.findByRole("region", { name: "PDFページ" });
+
+      await user.click(screen.getByRole("button", { name: "go to page 9" }));
+      // No debounce wait at all: closing must flush synchronously.
+      await user.click(screen.getByRole("button", { name: "← ライブラリ" }));
+
+      expect(
+        storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
+      ).toBe(9);
+    });
+
+    it("flushes the pending page immediately when the app itself unmounts, before the debounce fires", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([{ path: "/Papers/a.pdf", name: "a.pdf", openedAt: 1 }]);
+      mockRenderer(20);
+
+      const { unmount } = await renderApp();
+      await user.click(screen.getByRole("button", { name: "a.pdf を開く" }));
+      await screen.findByRole("region", { name: "PDFページ" });
+
+      await user.click(screen.getByRole("button", { name: "go to page 9" }));
+      // Still mid-debounce: unmounting right away must not lose it to a
+      // `setRecentFiles` updater React silently drops for a gone component.
+      expect(
+        storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
+      ).not.toBe(9);
+
+      unmount();
+
+      expect(
+        storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
+      ).toBe(9);
+    });
+
+    it("saves the page under the original path, not a bookmark-resolved one (issue #51)", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([
+        {
+          path: "/Papers/a.pdf",
+          name: "a.pdf",
+          openedAt: 1,
+          bookmark: "encoded-bookmark",
+        },
+      ]);
+      mockRenderer(20);
+      // iOS can relocate a picked file's container between launches; the
+      // bookmark then resolves to a different path from the one the
+      // recent-files entry is keyed under (see `readPdfFileWithBookmark`,
+      // `OpenDocument.recentPath`).
+      invoke.mockImplementation((command: string) => {
+        if (command === "resolve_bookmark") {
+          return Promise.resolve("file:///resolved/container/a.pdf");
+        }
+        if (command === "register_pdf_path") return Promise.resolve(undefined);
+        if (command === "api_key_status") return Promise.resolve([]);
+        return Promise.resolve(defaultSettings());
+      });
+
+      await renderApp();
+      await user.click(screen.getByRole("button", { name: "a.pdf を開く" }));
+      await screen.findByRole("region", { name: "PDFページ" });
+
+      await user.click(screen.getByRole("button", { name: "go to page 9" }));
+      await waitFor(() => {
+        expect(
+          storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
+        ).toBe(9);
+      });
+      // No second entry was created under the resolved path.
+      expect(
+        storedRecentFiles().some(
+          (f) => f.path === "file:///resolved/container/a.pdf",
+        ),
+      ).toBe(false);
     });
   });
 

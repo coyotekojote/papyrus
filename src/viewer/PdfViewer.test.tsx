@@ -204,6 +204,8 @@ function renderViewer(
   outline: OutlineNode[] = [],
   /** App settings this document opens with (issue #9). */
   defaults: { binding?: Binding; viewMode?: ViewMode } = {},
+  /** Where to start, and how to observe page changes (issue #43). */
+  paging: { initialPage?: number; onPageChange?: (page: number) => void } = {},
 ) {
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
@@ -216,6 +218,8 @@ function renderViewer(
       fileName="paper.pdf"
       defaultBinding={next.binding}
       defaultViewMode={next.viewMode}
+      initialPage={paging.initialPage}
+      onPageChange={paging.onPageChange}
       onClose={onClose}
       onOpenSettings={onOpenSettings}
     />
@@ -247,6 +251,35 @@ describe("PdfViewer", () => {
     expect(renderedPages().length).toBeLessThanOrEqual(4);
   });
 
+  describe("starting page (issue #43)", () => {
+    it("reports page 1 when initialPage is omitted", () => {
+      const onPageChange = vi.fn();
+      renderViewer(20, [], {}, { onPageChange });
+
+      expect(screen.getByText(`1 / 20`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenCalledWith(1);
+      expect(onPageChange).toHaveBeenCalledTimes(1);
+    });
+
+    it("starts on initialPage and reports it once on mount", () => {
+      const onPageChange = vi.fn();
+      renderViewer(20, [], {}, { initialPage: 5, onPageChange });
+
+      expect(screen.getByText(`5 / 20`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenCalledWith(5);
+      expect(onPageChange).toHaveBeenCalledTimes(1);
+    });
+
+    it("clamps an initialPage beyond the document's page count to the last page", () => {
+      const onPageChange = vi.fn();
+      renderViewer(20, [], {}, { initialPage: 999, onPageChange });
+
+      expect(screen.getByText(`20 / 20`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenCalledWith(20);
+      expect(onPageChange).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("renders the pages it shows via the injected renderer", async () => {
     const { doc } = renderViewer();
 
@@ -258,13 +291,18 @@ describe("PdfViewer", () => {
   });
 
   it("advances with the right arrow in a left-bound book", async () => {
-    const { user } = renderViewer();
+    const onPageChange = vi.fn();
+    const { user } = renderViewer(PAGE_COUNT, [], {}, { onPageChange });
 
     await user.keyboard("{ArrowRight}");
     expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    // First call is the mount-time report of page 1 (issue #43); this checks
+    // the arrow key's own move landed on top of it.
+    expect(onPageChange).toHaveBeenLastCalledWith(2);
 
     await user.keyboard("{ArrowLeft}");
     expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    expect(onPageChange).toHaveBeenLastCalledWith(1);
   });
 
   it("does not move past the first or last page", async () => {
@@ -890,8 +928,15 @@ describe("PdfViewer", () => {
       { title: "付録", pageNumber: null, children: [] },
     ];
 
-    async function openSidebar(pageCount = PAGE_COUNT, nodes = outline) {
-      const viewer = renderViewer(pageCount, nodes);
+    async function openSidebar(
+      pageCount = PAGE_COUNT,
+      nodes = outline,
+      paging: {
+        initialPage?: number;
+        onPageChange?: (page: number) => void;
+      } = {},
+    ) {
+      const viewer = renderViewer(pageCount, nodes, {}, paging);
       await viewer.user.click(screen.getByRole("button", { name: "目次" }));
       return viewer;
     }
@@ -924,12 +969,16 @@ describe("PdfViewer", () => {
     });
 
     it("jumps to the page a bookmark points at", async () => {
-      const { user } = await openSidebar();
+      const onPageChange = vi.fn();
+      const { user } = await openSidebar(PAGE_COUNT, outline, {
+        onPageChange,
+      });
       await screen.findByRole("list", { name: "目次" });
 
       await user.click(screen.getByRole("button", { name: /後半/ }));
 
       expect(screen.getByText(`6 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenLastCalledWith(6);
     });
 
     it("offers no jump for a bookmark whose destination is unresolved", async () => {
@@ -1013,7 +1062,8 @@ describe("PdfViewer", () => {
     });
 
     it("falls back to page thumbnails when the document has no bookmarks", async () => {
-      const { user } = await openSidebar(PAGE_COUNT, []);
+      const onPageChange = vi.fn();
+      const { user } = await openSidebar(PAGE_COUNT, [], { onPageChange });
 
       const thumbnail = await screen.findByRole("button", { name: "3ページ" });
       await user.click(thumbnail);
@@ -1026,6 +1076,7 @@ describe("PdfViewer", () => {
       expect(
         screen.getByRole("button", { name: "1ページ" }),
       ).not.toHaveAttribute("aria-current");
+      expect(onPageChange).toHaveBeenLastCalledWith(3);
     });
 
     it("mounts only a few thumbnails of a long document", async () => {
