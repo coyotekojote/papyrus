@@ -163,13 +163,40 @@ export function saveClip(pdfPath: string, pngBase64: string): Promise<string> {
   return invokeSidecar("save_clip", { pdfPath, pngBase64 });
 }
 
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  return Object.prototype.toString.call(value) === "[object ArrayBuffer]";
+}
+
+function describeType(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (Array.isArray(value)) return "Array";
+  if (typeof value === "object") return value.constructor?.name ?? "object";
+  return typeof value;
+}
+
 /**
  * Reads a clip back, for showing it in the notes preview. `file` is a path
  * relative to the sidecar folder; the backend refuses anything pointing out
  * of it.
+ *
+ * `load_clip` is the only command returning a raw `tauri::ipc::Response`
+ * rather than JSON. If the CSP blocks the IPC protocol's fetch, Tauri falls
+ * back to a postMessage path that mangles this response instead of throwing
+ * — so the bytes must be checked explicitly, or a broken clip surfaces only
+ * as a corrupt image with no error anywhere (issue #42).
  */
-export function loadClip(pdfPath: string, file: string): Promise<ArrayBuffer> {
-  return invokeSidecar("load_clip", { pdfPath, file });
+export async function loadClip(
+  pdfPath: string,
+  file: string,
+): Promise<ArrayBuffer> {
+  const bytes = await invokeSidecar<unknown>("load_clip", { pdfPath, file });
+  if (!isArrayBuffer(bytes)) {
+    throw new Error(
+      `load_clip returned ${describeType(bytes)} instead of ArrayBuffer`,
+    );
+  }
+  return bytes;
 }
 
 export function sidecarStatus(pdfPath: string): Promise<SidecarStatus> {

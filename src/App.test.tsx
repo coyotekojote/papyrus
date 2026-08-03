@@ -468,6 +468,48 @@ describe("App start screen", () => {
         storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
       ).toBe(9);
     });
+
+    it("saves the page under the original path, not a bookmark-resolved one (issue #51)", async () => {
+      const user = userEvent.setup();
+      seedRecentFiles([
+        {
+          path: "/Papers/a.pdf",
+          name: "a.pdf",
+          openedAt: 1,
+          bookmark: "encoded-bookmark",
+        },
+      ]);
+      mockRenderer(20);
+      // iOS can relocate a picked file's container between launches; the
+      // bookmark then resolves to a different path from the one the
+      // recent-files entry is keyed under (see `readPdfFileWithBookmark`,
+      // `OpenDocument.recentPath`).
+      invoke.mockImplementation((command: string) => {
+        if (command === "resolve_bookmark") {
+          return Promise.resolve("file:///resolved/container/a.pdf");
+        }
+        if (command === "register_pdf_path") return Promise.resolve(undefined);
+        if (command === "api_key_status") return Promise.resolve([]);
+        return Promise.resolve(defaultSettings());
+      });
+
+      await renderApp();
+      await user.click(screen.getByRole("button", { name: "a.pdf を開く" }));
+      await screen.findByRole("region", { name: "PDFページ" });
+
+      await user.click(screen.getByRole("button", { name: "go to page 9" }));
+      await waitFor(() => {
+        expect(
+          storedRecentFiles().find((f) => f.path === "/Papers/a.pdf")?.lastPage,
+        ).toBe(9);
+      });
+      // No second entry was created under the resolved path.
+      expect(
+        storedRecentFiles().some(
+          (f) => f.path === "file:///resolved/container/a.pdf",
+        ),
+      ).toBe(false);
+    });
   });
 
   it("renders the Papyrus heading and tagline", async () => {

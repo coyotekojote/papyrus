@@ -93,6 +93,38 @@ describe("RenderQueue", () => {
     await pOverscan;
   });
 
+  it("dequeues a preview ahead of a visible task already waiting behind the running one", async () => {
+    const queue = new RenderQueue();
+    const started: string[] = [];
+    const busy = controlledTask(started, "busy");
+    const visible = controlledTask(started, "visible");
+    const preview = controlledTask(started, "preview");
+    const controller = new AbortController();
+
+    // Occupies the single slot so both later calls queue up behind it.
+    const pBusy = queue.schedule("visible", busy.run, controller.signal);
+    await Promise.resolve();
+    expect(started).toEqual(["busy"]);
+
+    const pVisible = queue.schedule("visible", visible.run, controller.signal);
+    const pPreview = queue.schedule("preview", preview.run, controller.signal);
+
+    busy.resolve();
+    await pBusy;
+    // "preview" was queued after "visible", but outranks it and must run
+    // first regardless — the whole point of the priority (issue #37).
+    await Promise.resolve();
+    expect(started).toEqual(["busy", "preview"]);
+
+    preview.resolve();
+    await pPreview;
+    await Promise.resolve();
+    expect(started).toEqual(["busy", "preview", "visible"]);
+
+    visible.resolve();
+    await pVisible;
+  });
+
   it("removes a task from the queue and never starts it if its signal aborts before its turn", async () => {
     const queue = new RenderQueue();
     const started: string[] = [];

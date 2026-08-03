@@ -9,6 +9,7 @@ import {
   ANNOTATIONS_VERSION,
   emptyAnnotations,
   loadAnnotations,
+  loadClip,
   loadNotes,
   saveAnnotations,
   saveNotes,
@@ -141,6 +142,37 @@ describe("notes", () => {
     invoke.mockRejectedValueOnce({ kind: "conflict", path: "notes.md" });
     await expect(saveNotes(PDF, "本文", 42)).rejects.toBeInstanceOf(
       SidecarConflictError,
+    );
+  });
+});
+
+describe("loadClip", () => {
+  it("resolves to the bytes when the backend returns an ArrayBuffer", async () => {
+    const bytes = new TextEncoder().encode("png-bytes").buffer as ArrayBuffer;
+    invoke.mockResolvedValueOnce(bytes);
+
+    await expect(loadClip(PDF, "clips/clip-0001.png")).resolves.toBe(bytes);
+    expect(invoke).toHaveBeenCalledWith("load_clip", {
+      pdfPath: PDF,
+      file: "clips/clip-0001.png",
+    });
+  });
+
+  it("rejects when the backend returns something other than an ArrayBuffer", async () => {
+    // What a CSP-blocked IPC fetch degrades to on the postMessage fallback:
+    // no exception, just a payload that is not the ArrayBuffer callers expect.
+    invoke.mockResolvedValueOnce({ unexpected: "payload" });
+
+    await expect(loadClip(PDF, "clips/clip-0001.png")).rejects.toThrow(
+      "load_clip returned Object instead of ArrayBuffer",
+    );
+  });
+
+  it("rejects with the value's type when the backend returns null", async () => {
+    invoke.mockResolvedValueOnce(null);
+
+    await expect(loadClip(PDF, "clips/clip-0001.png")).rejects.toThrow(
+      "load_clip returned null instead of ArrayBuffer",
     );
   });
 });

@@ -2268,6 +2268,7 @@ dependencies = [
  "keyring",
  "objc2",
  "objc2-foundation",
+ "percent-encoding",
  "reqwest",
  "security-framework 3.7.0",
  "security-framework-sys",

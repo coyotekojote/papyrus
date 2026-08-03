@@ -4,6 +4,7 @@ import {
   PdfFileMissingError,
   pickPdfFile,
   readPdfFileWithBookmark,
+  registerPdfPath,
 } from "./files/open";
 import {
   addRecentFile,
@@ -31,6 +32,16 @@ interface OpenDocument {
   pageSizes: PageSize[];
   path: string;
   name: string;
+  /**
+   * The original `path` this document was opened from — the key its
+   * recent-files entry lives under. `path` above is the bookmark-resolved
+   * path (issue #51's `effectivePath`), which can change on every launch on
+   * iOS; saving against it would both go stale immediately and miss the
+   * entry `path` already dedups the recent-files list on. Everything that
+   * persists to the recent-files list (issue #43's page-save included) must
+   * key off this field, not `path`.
+   */
+  recentPath: string;
   /** Page to open the viewer on (issue #43); see {@link PdfViewerProps.initialPage}. */
   initialPage?: number;
 }
@@ -169,8 +180,12 @@ function App() {
       try {
         markStart("app:read-file");
         let bytes: Uint8Array;
+        let effectivePath: string;
         try {
-          bytes = await readPdfFileWithBookmark(path, bookmark);
+          ({ bytes, path: effectivePath } = await readPdfFileWithBookmark(
+            path,
+            bookmark,
+          ));
         } catch (cause) {
           // A missing/unreadable file never reaches markEnd below — without
           // this the start mark would sit unmeasured forever, the same
@@ -179,6 +194,16 @@ function App() {
           throw cause;
         }
         markEnd("app:read-file");
+        try {
+          // Lets the sidecar commands (notes/annotations/clips) touch this
+          // pdf_path for the rest of the session (issue #40). Non-fatal: the
+          // read above already succeeded through plugin-fs, so a failure
+          // here must not stop the document from opening — it only means a
+          // later sidecar call on this path will fail on its own.
+          await registerPdfPath(effectivePath);
+        } catch (cause) {
+          console.warn("failed to register pdf path for sidecar access", cause);
+        }
         const renderer = await loadDefaultRenderer();
         const doc = await renderer.open(bytes);
 
@@ -225,15 +250,24 @@ function App() {
             : Math.min(Math.max(lastPage, 1), Math.max(doc.pageCount, 1));
 
         const previous = openDocumentRef.current;
+        // `name` stays derived from the original `path`, not `effectivePath`:
+        // a resolved bookmark URL is percent-encoded (e.g. `%E8%AB%96%E6%96%87.pdf`)
+        // and `fileNameFromPath` does not decode it, so the display name would
+        // otherwise come out mangled.
         setOpenDocument({
           doc,
           pageSizes,
-          path,
+          path: effectivePath,
           name: fileNameFromPath(path),
+          recentPath: path,
           initialPage,
         });
         if (previous) void previous.doc.destroy();
 
+        // Keyed on the original `path`, not `effectivePath`: a resolved
+        // bookmark URL can change on every launch, so persisting it would
+        // both go stale immediately and duplicate the entry `path` already
+        // dedups on.
         rememberRecentFiles((current) =>
           addRecentFile(current, {
             path,
@@ -303,7 +337,10 @@ function App() {
    */
   const handlePageChange = useCallback(
     (page: number) => {
-      const path = openDocumentRef.current?.path;
+      // `recentPath`, not `path`: `path` is the bookmark-resolved path, which
+      // is not the key the recent-files entry lives under (see
+      // `OpenDocument.recentPath`).
+      const path = openDocumentRef.current?.recentPath;
       if (!path) return;
       pendingPageSaveRef.current = { path, page };
       if (pageSaveTimerRef.current !== null) {
