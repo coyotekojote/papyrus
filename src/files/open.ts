@@ -83,28 +83,38 @@ export async function readPdfFile(path: string): Promise<Uint8Array> {
   return readFile(path);
 }
 
+export interface PdfFileContents {
+  bytes: Uint8Array;
+  /**
+   * The path actually read from: the bookmark's resolved `file://` URL when
+   * that is where `bytes` came from, otherwise the `path` passed in.
+   */
+  path: string;
+}
+
 /**
  * Reads a PDF, preferring the path a bookmark resolves to over the saved
  * one. iOS can relocate a picked file's container between launches, so the
  * path a recent-files entry remembers may no longer be it — the bookmark, if
  * one was saved, is resolved fresh instead. Falls back to `path` when there
  * is no bookmark, resolution fails, or the resolved location turns out not to
- * be readable either.
+ * be readable either. The returned `path` reflects whichever of the two was
+ * actually read, so callers can register/use that one downstream (issue #49).
  */
 export async function readPdfFileWithBookmark(
   path: string,
   bookmark?: string,
-): Promise<Uint8Array> {
+): Promise<PdfFileContents> {
   if (bookmark) {
     const resolved = await resolveBookmark(bookmark);
     if (resolved) {
       try {
-        return await readPdfFile(resolved);
+        return { bytes: await readPdfFile(resolved), path: resolved };
       } catch (cause) {
         if (!(cause instanceof PdfFileMissingError)) throw cause;
         // Falls through to the saved path below.
       }
     }
   }
-  return readPdfFile(path);
+  return { bytes: await readPdfFile(path), path };
 }

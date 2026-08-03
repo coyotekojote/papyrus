@@ -101,8 +101,12 @@ function App() {
       try {
         markStart("app:read-file");
         let bytes: Uint8Array;
+        let effectivePath: string;
         try {
-          bytes = await readPdfFileWithBookmark(path, bookmark);
+          ({ bytes, path: effectivePath } = await readPdfFileWithBookmark(
+            path,
+            bookmark,
+          ));
         } catch (cause) {
           // A missing/unreadable file never reaches markEnd below — without
           // this the start mark would sit unmeasured forever, the same
@@ -117,7 +121,7 @@ function App() {
           // read above already succeeded through plugin-fs, so a failure
           // here must not stop the document from opening — it only means a
           // later sidecar call on this path will fail on its own.
-          await registerPdfPath(path);
+          await registerPdfPath(effectivePath);
         } catch (cause) {
           console.warn("failed to register pdf path for sidecar access", cause);
         }
@@ -159,9 +163,22 @@ function App() {
         });
 
         const previous = openDocumentRef.current;
-        setOpenDocument({ doc, pageSizes, path, name: fileNameFromPath(path) });
+        // `name` stays derived from the original `path`, not `effectivePath`:
+        // a resolved bookmark URL is percent-encoded (e.g. `%E8%AB%96%E6%96%87.pdf`)
+        // and `fileNameFromPath` does not decode it, so the display name would
+        // otherwise come out mangled.
+        setOpenDocument({
+          doc,
+          pageSizes,
+          path: effectivePath,
+          name: fileNameFromPath(path),
+        });
         if (previous) void previous.doc.destroy();
 
+        // Keyed on the original `path`, not `effectivePath`: a resolved
+        // bookmark URL can change on every launch, so persisting it would
+        // both go stale immediately and duplicate the entry `path` already
+        // dedups on.
         rememberRecentFiles((current) =>
           addRecentFile(current, {
             path,
