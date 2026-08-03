@@ -1055,7 +1055,7 @@ describe("PdfViewer", () => {
       ]);
       await screen.findByRole("list", { name: "目次" });
 
-      expect(screen.getByRole("button", { name: "序章 1" })).toHaveTextContent(
+      expect(screen.getByRole("button", { name: "序章1" })).toHaveTextContent(
         /^序章1$/,
       );
     });
@@ -1070,7 +1070,7 @@ describe("PdfViewer", () => {
       ]);
       await screen.findByRole("list", { name: "目次" });
 
-      await user.click(screen.getByRole("button", { name: "（無題） 2" }));
+      await user.click(screen.getByRole("button", { name: "（無題）2" }));
       expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
       expect(
         screen.getByRole("button", { name: "（無題） を折りたたむ" }),
