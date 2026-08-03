@@ -295,6 +295,16 @@ describe("useNotes", () => {
       expect(saveNotes).not.toHaveBeenCalled();
     });
 
+    it("treats a whitespace-only note as empty and replaces it", async () => {
+      const { result } = await mountLoaded(" \n\t", 111);
+
+      act(() => result.current.initializeContent("# 見出し\n"));
+
+      expect(result.current.content).toBe("# 見出し\n");
+      await runDebouncedSave();
+      expect(saveNotes).not.toHaveBeenCalled();
+    });
+
     it("is ignored before the initial load finishes", async () => {
       let resolveLoad: (value: { content: string; modifiedAtMs: null }) => void;
       vi.mocked(loadNotes).mockReturnValue(

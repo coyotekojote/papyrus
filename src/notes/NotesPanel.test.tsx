@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotesPanel, type NotesPanelProps } from "./NotesPanel";
@@ -76,6 +76,33 @@ describe("NotesPanel", () => {
     });
 
     expect(textarea.selectionStart).toBe(textarea.value.length);
+  });
+
+  it("applies a followHeading that arrived while editing once the editor blurs", async () => {
+    const user = userEvent.setup();
+    const content = "# 第1章\n\n本文\n\n# 第2章\n";
+    const { rerender } = render(
+      <NotesPanel {...props({ content, followHeading: null })} />,
+    );
+
+    const textarea = editor();
+    await user.click(textarea);
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    // The reader turns a page while still focused on the editor — the
+    // cursor must not jump out from under them mid-keystroke.
+    act(() => {
+      rerender(<NotesPanel {...props({ content, followHeading: "第2章" })} />);
+    });
+    expect(textarea.selectionStart).toBe(textarea.value.length);
+
+    // Nothing else changes (`followHeading`, `mode`, `content` are all the
+    // same as when the effect last ran) — only focus leaves the editor.
+    act(() => {
+      fireEvent.blur(textarea);
+    });
+
+    expect(textarea.selectionStart).toBe(content.indexOf("# 第2章"));
   });
 
   it("does nothing when the heading cannot be found", () => {

@@ -66,6 +66,13 @@ export function NotesPanel({
 }: NotesPanelProps) {
   const [mode, setMode] = useState<Mode>("edit");
   const [dictationHintOpen, setDictationHintOpen] = useState(false);
+  /**
+   * Tracked as state, not read off `document.activeElement`, so blurring the
+   * editor is itself a change the follow effect below reacts to — a
+   * `followHeading` that arrived while the reader was typing must not be
+   * lost just because nothing else changed after they clicked away.
+   */
+  const [editorFocused, setEditorFocused] = useState(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const dictationHintId = useId();
   const clipFiles = useMemo(() => clips.map((clip) => clip.file), [clips]);
@@ -105,10 +112,14 @@ export function NotesPanel({
 
   // Follows the reader's current section (#46): moves the caret to the
   // matching heading when it changes. Left alone while the reader is
-  // actually typing — `document.activeElement` is the one live signal for
-  // that — so the cursor is never yanked out from under a keystroke. Focus
-  // itself is never taken: this only helps a reader who is already looking
-  // at the editor, and stealing focus would disrupt everything else.
+  // actually typing — `editorFocused` is the live signal for that — so the
+  // cursor is never yanked out from under a keystroke. Focus itself is
+  // never taken: this only helps a reader who is already looking at the
+  // editor, and stealing focus would disrupt everything else. Because
+  // `editorFocused` is a dependency, blurring the editor re-runs this even
+  // when `followHeading` arrived and settled while the reader was still
+  // typing, so the follow that was skipped then still happens once they
+  // click away.
   useEffect(() => {
     if (mode !== "edit") {
       appliedFollowHeadingRef.current = null;
@@ -124,8 +135,9 @@ export function NotesPanel({
       return;
     }
     if (followHeading === appliedFollowHeadingRef.current) return;
+    if (editorFocused) return;
     const textarea = editorRef.current;
-    if (!textarea || document.activeElement === textarea) return;
+    if (!textarea) return;
 
     const offset = findHeadingOffset(content, followHeading);
     if (offset === null) return;
@@ -139,7 +151,7 @@ export function NotesPanel({
     const lineIndex = content.slice(0, offset).split("\n").length - 1;
     const lineHeight = textarea.scrollHeight / totalLines;
     textarea.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight);
-  }, [followHeading, mode, content]);
+  }, [followHeading, mode, content, editorFocused]);
 
   return (
     <div className="notes">
@@ -234,6 +246,8 @@ export function NotesPanel({
             placeholder="markdown でメモを書く。ハイライトの「メモに挿入」で引用が追記されます。"
             spellCheck={false}
             onChange={(event) => onChange(event.target.value)}
+            onFocus={() => setEditorFocused(true)}
+            onBlur={() => setEditorFocused(false)}
           />
         </>
       ) : (

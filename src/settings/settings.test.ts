@@ -113,12 +113,12 @@ describe("normalizeSettings", () => {
 
   it("falls back to the default for a non-boolean outline setting", () => {
     for (const value of ["true", 0, null, undefined, {}]) {
-      expect(
-        normalizeSettings({
-          notesOutlineInsert: value,
-          notesOutlineFollow: value,
-        }).notesOutlineInsert,
-      ).toBe(true);
+      const settings = normalizeSettings({
+        notesOutlineInsert: value,
+        notesOutlineFollow: value,
+      });
+      expect(settings.notesOutlineInsert).toBe(true);
+      expect(settings.notesOutlineFollow).toBe(true);
     }
   });
 });
