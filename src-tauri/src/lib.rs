@@ -1,5 +1,6 @@
 pub mod bookmarks;
 pub mod keychain;
+pub mod pdf_allowlist;
 pub mod settings;
 pub mod sidecar;
 pub mod translation;
@@ -23,10 +24,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // In-memory allow-list of PDF paths the sidecar commands may write
+        // next to (issue #40) — see pdf_allowlist.rs.
+        .manage(pdf_allowlist::AllowedPdfs::new())
         .invoke_handler(tauri::generate_handler![
             greet,
             bookmarks::create_bookmark,
             bookmarks::resolve_bookmark,
+            pdf_allowlist::register_pdf_path,
             sidecar::load_annotations,
             sidecar::save_annotations,
             sidecar::load_notes,

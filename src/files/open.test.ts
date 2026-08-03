@@ -4,6 +4,7 @@ import {
   createBookmarkFor,
   readPdfFile,
   readPdfFileWithBookmark,
+  registerPdfPath,
   resolveBookmark,
 } from "./open";
 
@@ -136,6 +137,26 @@ describe("readPdfFileWithBookmark", () => {
     await expect(
       readPdfFileWithBookmark("/Papers/attention.pdf", "Ym9va21hcms="),
     ).rejects.toBeInstanceOf(PdfFileMissingError);
+  });
+});
+
+describe("registerPdfPath", () => {
+  it("passes the path through to the register_pdf_path command", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await registerPdfPath("/Papers/attention.pdf");
+
+    expect(invoke).toHaveBeenCalledWith("register_pdf_path", {
+      path: "/Papers/attention.pdf",
+    });
+  });
+
+  it("propagates a rejection rather than swallowing it", async () => {
+    invoke.mockRejectedValue(new Error("outside every allowed root"));
+
+    await expect(registerPdfPath("/Papers/attention.pdf")).rejects.toThrow(
+      "outside every allowed root",
+    );
   });
 });
 
