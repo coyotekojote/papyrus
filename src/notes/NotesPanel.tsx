@@ -114,7 +114,15 @@ export function NotesPanel({
       appliedFollowHeadingRef.current = null;
       return;
     }
-    if (followHeading === null) return;
+    if (followHeading === null) {
+      // Out of any section (before the first bookmark, say) is not a
+      // heading to remember as "applied": without clearing this, leaving a
+      // section and coming straight back to it — or turning the setting
+      // off and back on — would look like no change at all and the follow
+      // would be silently skipped.
+      appliedFollowHeadingRef.current = null;
+      return;
+    }
     if (followHeading === appliedFollowHeadingRef.current) return;
     const textarea = editorRef.current;
     if (!textarea || document.activeElement === textarea) return;

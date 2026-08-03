@@ -134,6 +134,29 @@ describe("NotesPanel", () => {
     expect(textarea.selectionStart).toBe(content.indexOf("# 第2章"));
   });
 
+  it("re-follows to the same heading after passing through null (leaving the section, or the setting toggled off and back on)", () => {
+    const content = "# 第1章\n\n本文\n";
+    const { rerender } = render(
+      <NotesPanel {...props({ content, followHeading: null })} />,
+    );
+
+    rerender(<NotesPanel {...props({ content, followHeading: "第1章" })} />);
+    const textarea = editor();
+    expect(textarea.selectionStart).toBe(0);
+
+    // The reader scrolls before the first bookmark (or the setting is
+    // turned off) — followHeading goes back to null — and moves the caret
+    // elsewhere in the meantime.
+    rerender(<NotesPanel {...props({ content, followHeading: null })} />);
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+    // Back to the same section. Without clearing the "applied" marker on
+    // null, this would look like no change and the follow would be skipped.
+    rerender(<NotesPanel {...props({ content, followHeading: "第1章" })} />);
+
+    expect(textarea.selectionStart).toBe(0);
+  });
+
   it("never steals focus while following", () => {
     const content = "# 第1章\n";
     const { rerender } = render(

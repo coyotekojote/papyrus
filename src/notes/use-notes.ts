@@ -277,9 +277,10 @@ export function useNotes(pdfPath: string): UseNotesResult {
     initializeContent: useCallback((text: string) => {
       const session = sessionRef.current;
       // Same refusals as `edit`: before the load, or mid-conflict, nothing
-      // here is safe to overwrite. Unlike `edit`, an existing note (even one
-      // only whitespace away from empty) is also left alone — this is a
-      // one-time default, not something the reader asked to happen.
+      // here is safe to overwrite. A note with real text in it is left
+      // alone — this is a one-time default, not something the reader asked
+      // to happen — but one that is only whitespace still counts as empty
+      // and gets the default, the same as no note at all.
       if (!session.loaded || session.conflict) return;
       if (session.content.trim() !== "") return;
       session.content = text;
