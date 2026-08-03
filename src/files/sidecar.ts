@@ -163,6 +163,10 @@ export function saveClip(pdfPath: string, pngBase64: string): Promise<string> {
   return invokeSidecar("save_clip", { pdfPath, pngBase64 });
 }
 
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  return Object.prototype.toString.call(value) === "[object ArrayBuffer]";
+}
+
 function describeType(value: unknown): string {
   if (value === null) return "null";
   if (value === undefined) return "undefined";
@@ -187,7 +191,7 @@ export async function loadClip(
   file: string,
 ): Promise<ArrayBuffer> {
   const bytes = await invokeSidecar<unknown>("load_clip", { pdfPath, file });
-  if (Object.prototype.toString.call(bytes) !== "[object ArrayBuffer]") {
+  if (!isArrayBuffer(bytes)) {
     throw new Error(
       `load_clip returned ${describeType(bytes)} instead of ArrayBuffer`,
     );
