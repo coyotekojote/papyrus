@@ -22,6 +22,7 @@ use std::fs;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::pdf_allowlist::{self, AllowedPdfs};
+use crate::sidecar;
 
 /// Encodes bookmark bytes as base64 so they can sit next to a recent-files
 /// entry as plain text (see `RecentFile.bookmark` in `src/files/recent.ts`).
@@ -171,7 +172,16 @@ fn resolve_bookmark_with(bookmark: &str, state: &AllowedPdfs) -> Result<Option<S
 /// so this path would otherwise have no test coverage at all on this
 /// development machine.
 fn register_resolved_bookmark(state: &AllowedPdfs, resolved: &str) {
-    if let Ok(canonical) = fs::canonicalize(pdf_allowlist::decode_maybe_file_url(resolved)) {
+    let decoded = pdf_allowlist::decode_maybe_file_url(resolved);
+    // Every other path into AllowedPdfs (`register_pdf_path_with`, via
+    // `canonical_pdf_under_roots`) checks this before inserting, so skipping
+    // it here would let a non-.pdf bookmark break the allow-list's
+    // invariant that everything in it is a path sidecar.rs may treat as a
+    // PDF.
+    if sidecar::sidecar_dir(&decoded).is_err() {
+        return;
+    }
+    if let Ok(canonical) = fs::canonicalize(decoded) {
         state.insert(canonical);
     }
 }
@@ -234,6 +244,18 @@ mod tests {
         register_resolved_bookmark(&state, &url);
 
         assert!(state.contains(&fs::canonicalize(&pdf).unwrap()));
+    }
+
+    #[test]
+    fn register_resolved_bookmark_rejects_a_non_pdf_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("notes.txt");
+        fs::write(&txt, b"not a pdf").unwrap();
+        let state = AllowedPdfs::new();
+
+        register_resolved_bookmark(&state, txt.to_str().unwrap());
+
+        assert!(!state.contains(&fs::canonicalize(&txt).unwrap()));
     }
 
     #[test]
