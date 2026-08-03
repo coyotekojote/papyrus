@@ -10,7 +10,7 @@ jobs:
     name: Frontend (lint / format / test / build)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -36,7 +36,7 @@ jobs:
     name: Rust (fmt / clippy / test)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: jdx/mise-action@v2
 
@@ -61,7 +61,7 @@ jobs:
     runs-on: macos-latest
     needs: [frontend, rust]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
