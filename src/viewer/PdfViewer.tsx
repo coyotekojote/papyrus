@@ -157,9 +157,12 @@ export interface PdfViewerProps {
   defaultBinding?: Binding;
   defaultViewMode?: ViewMode;
   /**
-   * 1-based page to open on (issue #43), from the recent-files entry. Out of
-   * range or omitted both just start the document at page 1 — clamping into
-   * range is this component's job, not the caller's.
+   * 1-based page to open on (issue #43), from the recent-files entry.
+   * Clamping into `[1, doc.pageCount]` is this component's job, not the
+   * caller's: omitted starts the document at page 1, and an out-of-range
+   * value (a stale entry from a since-shortened file, say) starts it at the
+   * nearest valid page instead — page 1 for anything below the range, the
+   * last page for anything above it.
    */
   initialPage?: number;
   /**

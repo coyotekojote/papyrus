@@ -62,15 +62,20 @@ function App() {
   openDocumentRef.current = openDocument;
 
   /**
-   * Mirrors `recentFiles`, written during render like `openDocumentRef`
-   * above. `rememberRecentFiles` reads this instead of going through
-   * `setRecentFiles`'s updater form: React drops an updater passed to a
-   * state setter once the component has unmounted, which would otherwise
+   * Mirrors `recentFiles`. `rememberRecentFiles` reads this instead of going
+   * through `setRecentFiles`'s updater form: React drops an updater passed to
+   * a state setter once the component has unmounted, which would otherwise
    * make a flush from the unmount-cleanup effect below a silent no-op — the
    * exact moment `flushPendingPageSave` (issue #43) most needs to still work.
+   * Synced from an effect rather than during render: `rememberRecentFiles`
+   * itself already keeps this current for calls made between renders (the
+   * `recentFilesRef.current = next` below), so the effect only has to catch
+   * `recentFiles` changing some other way — the initial load, most notably.
    */
   const recentFilesRef = useRef<readonly RecentFile[]>(recentFiles);
-  recentFilesRef.current = recentFiles;
+  useEffect(() => {
+    recentFilesRef.current = recentFiles;
+  }, [recentFiles]);
 
   /**
    * Aborts the background half of a progressive page-size load (issue #12):

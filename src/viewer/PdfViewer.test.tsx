@@ -204,6 +204,8 @@ function renderViewer(
   outline: OutlineNode[] = [],
   /** App settings this document opens with (issue #9). */
   defaults: { binding?: Binding; viewMode?: ViewMode } = {},
+  /** Where to start, and how to observe page changes (issue #43). */
+  paging: { initialPage?: number; onPageChange?: (page: number) => void } = {},
 ) {
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
@@ -216,6 +218,8 @@ function renderViewer(
       fileName="paper.pdf"
       defaultBinding={next.binding}
       defaultViewMode={next.viewMode}
+      initialPage={paging.initialPage}
+      onPageChange={paging.onPageChange}
       onClose={onClose}
       onOpenSettings={onOpenSettings}
     />
@@ -245,6 +249,32 @@ describe("PdfViewer", () => {
     renderViewer(200);
 
     expect(renderedPages().length).toBeLessThanOrEqual(4);
+  });
+
+  describe("starting page (issue #43)", () => {
+    it("reports page 1 when initialPage is omitted", () => {
+      const onPageChange = vi.fn();
+      renderViewer(20, [], {}, { onPageChange });
+
+      expect(screen.getByText(`1 / 20`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenCalledWith(1);
+    });
+
+    it("starts on initialPage and reports it once on mount", () => {
+      const onPageChange = vi.fn();
+      renderViewer(20, [], {}, { initialPage: 5, onPageChange });
+
+      expect(screen.getByText(`5 / 20`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenCalledWith(5);
+    });
+
+    it("clamps an initialPage beyond the document's page count to the last page", () => {
+      const onPageChange = vi.fn();
+      renderViewer(20, [], {}, { initialPage: 999, onPageChange });
+
+      expect(screen.getByText(`20 / 20`)).toBeInTheDocument();
+      expect(onPageChange).toHaveBeenCalledWith(20);
+    });
   });
 
   it("renders the pages it shows via the injected renderer", async () => {
