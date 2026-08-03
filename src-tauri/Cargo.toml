@@ -20,6 +20,7 @@ keyring = { version = "3", features = [
   "windows-native",
   "sync-secret-service",
 ] }
+percent-encoding = "2.3.2"
 # Translation providers are called from Rust, so the API key never reaches the
 # WebView (see translation.rs). rustls rather than the platform TLS stack: one
 # behaviour to reason about on every target, and no OpenSSL to build.
