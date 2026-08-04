@@ -397,4 +397,37 @@ describe("useNotes", () => {
     expect(result.current.loaded).toBe(false);
     expect(result.current.status).toBe("loading");
   });
+
+  it("ignores a load that resolves after the path changed", async () => {
+    let resolveFirst!: (value: {
+      content: string;
+      modifiedAtMs: number | null;
+    }) => void;
+    vi.mocked(loadNotes).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      }),
+    );
+
+    const { result, rerender } = renderHook(({ path }) => useNotes(path), {
+      initialProps: { path: PATH },
+    });
+
+    vi.mocked(loadNotes).mockResolvedValue({
+      content: "二冊目",
+      modifiedAtMs: 999,
+    });
+    rerender({ path: "/papers/other.pdf" });
+    await settle();
+    expect(result.current.content).toBe("二冊目");
+
+    // The first document's read finally comes back, long after the reader
+    // moved on. It belongs to a note that is no longer open.
+    await act(async () => {
+      resolveFirst({ content: "一冊目", modifiedAtMs: 111 });
+    });
+
+    expect(result.current.content).toBe("二冊目");
+    expect(result.current.status).toBe("saved");
+  });
 });

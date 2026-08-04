@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { readPdfFile } from "../files/open";
 import { MAX_RECENT_FILES } from "../files/recent";
 import { LruCache, loadDefaultRenderer } from "../pdf";
@@ -48,10 +48,23 @@ interface PdfCoverProps {
   name: string;
 }
 
-type CoverState =
+/**
+ * Tagged with the file it describes, so a cover that finishes rendering after
+ * the tile has moved on to another path is dropped rather than painted over
+ * the new one.
+ */
+type CoverState = { readonly path: string } & (
   | { status: "loading" }
   | { status: "ready"; src: string }
-  | { status: "failed" };
+  | { status: "failed" }
+);
+
+function newState(path: string): CoverState {
+  const cached = coverCache.get(path);
+  return cached
+    ? { path, status: "ready", src: cached }
+    : { path, status: "loading" };
+}
 
 /**
  * A library tile's cover image: the document's first page, rendered once and
@@ -61,20 +74,27 @@ type CoverState =
  */
 export function PdfCover({ path, name }: PdfCoverProps) {
   const cached = coverCache.get(path);
-  const [state, setState] = useState<CoverState>(() =>
-    cached ? { status: "ready", src: cached } : { status: "loading" },
-  );
+  const [state, setState] = useState<CoverState>(() => newState(path));
 
   // A tile is normally keyed by its path, so `path` changing under one is the
   // exception rather than the rule — but when it does happen the previous
   // file's cover must not stay on screen. Reset while rendering (React's
   // "adjusting state when a prop changes" pattern) rather than from an effect,
   // which would paint the stale cover for a frame first.
-  const [shownPath, setShownPath] = useState(path);
-  if (shownPath !== path) {
-    setShownPath(path);
-    setState(cached ? { status: "ready", src: cached } : { status: "loading" });
-  }
+  if (state.path !== path) setState(newState(path));
+
+  /**
+   * Applies a result to the cover of `path`, and only while that is still the
+   * file this tile shows. The check reads the state React is actually holding
+   * rather than the `cancelled` flag below: cancelling happens in the effect
+   * cleanup, which does not run until well after `path` has changed, so a
+   * render finishing in between would otherwise land on the wrong file.
+   */
+  const apply = useCallback(
+    (next: CoverState) =>
+      setState((current) => (current.path === next.path ? next : current)),
+    [],
+  );
 
   useEffect(() => {
     // Already painted from the cache; nothing to open.
@@ -90,21 +110,21 @@ export function PdfCover({ path, name }: PdfCoverProps) {
       try {
         const src = await renderCover(path);
         coverCache.set(path, src);
-        if (!cancelled) setState({ status: "ready", src });
+        if (!cancelled) apply({ path, status: "ready", src });
       } catch (cause) {
         // The placeholder says a cover is missing but not why, and a reader
         // has no way to ask. A corrupt file, a permission error and a renderer
         // that failed to start all look alike on screen, so the reason goes to
         // the console — the one place left to tell them apart.
         console.error(`Failed to render the cover for ${path}`, cause);
-        if (!cancelled) setState({ status: "failed" });
+        if (!cancelled) apply({ path, status: "failed" });
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [path, cached]);
+  }, [apply, path, cached]);
 
   if (state.status === "ready") {
     return <img className="cover__image" src={state.src} alt="" />;

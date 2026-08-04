@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import type { Highlight } from "../files/sidecar";
 import type { PdfDocumentHandle } from "../pdf";
 import { previewScale } from "../pdf/canvas-scale";
@@ -50,16 +56,20 @@ export function PageCanvas({
 }: PageCanvasProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState<string | null>(null);
-
   /**
-   * Everything the render effect below keys off. A change to any of it starts
-   * a fresh attempt, so the previous one's failure must stop being shown —
-   * done here, while rendering (React's "adjusting state when a prop changes"
-   * pattern), rather than from the effect, which would leave a stale error
-   * sitting over a canvas that painted fine for a frame first. Kept in step
-   * with that effect's dependency list.
+   * The last failure, tagged with the render attempt it came from. Everything
+   * the effect below keys off makes up an attempt, so a change to any of it
+   * starts a fresh one and this stops being shown — without an effect having
+   * to clear it, which would both leave a stale message over a canvas that
+   * painted fine for a frame and, if the failure landed in the gap before the
+   * effect's cleanup aborted it, attribute it to the wrong attempt entirely.
    */
+  const [failure, setFailure] = useState<{
+    attempt: readonly unknown[];
+    message: string;
+  } | null>(null);
+
+  // Kept in step with the render effect's dependency list.
   const attempt: readonly unknown[] = [
     doc,
     cache,
@@ -70,15 +80,37 @@ export function PageCanvas({
     queue,
     priority,
   ];
-  const [shownAttempt, setShownAttempt] = useState(attempt);
-  if (shownAttempt.some((value, index) => value !== attempt[index])) {
-    setShownAttempt(attempt);
-    setError(null);
-  }
+  const error =
+    failure && failure.attempt.every((value, index) => value === attempt[index])
+      ? failure.message
+      : null;
+
+  /** Reports a failure against the attempt that produced it. */
+  const reportFailure = useCallback(
+    (of: readonly unknown[], cause: unknown) =>
+      setFailure({
+        attempt: of,
+        message: cause instanceof Error ? cause.message : String(cause),
+      }),
+    [],
+  );
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+
+    // Rebuilt from the dependencies rather than closed over, so this effect is
+    // not re-run by the fresh array every render produces.
+    const thisAttempt: readonly unknown[] = [
+      doc,
+      cache,
+      pageNumber,
+      scale,
+      width,
+      height,
+      queue,
+      priority,
+    ];
 
     const cached = cache.get(pageNumber, scale);
     if (cached) {
@@ -122,7 +154,7 @@ export function PageCanvas({
 
       task.catch((cause: unknown) => {
         if (controller.signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        reportFailure(thisAttempt, cause);
       });
 
       return () => controller.abort();
@@ -217,7 +249,7 @@ export function PageCanvas({
       // before ever reaching its own `then`.
       clearStart(fullMark);
       if (controller.signal.aborted) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
+      reportFailure(thisAttempt, cause);
     });
 
     return () => {
@@ -229,7 +261,17 @@ export function PageCanvas({
     // becoming the visible one, say) must abort whatever this effect queued
     // last time and re-schedule at the new priority. The cache check above
     // makes that a no-op — never a second render — once the page is warm.
-  }, [doc, cache, pageNumber, scale, width, height, queue, priority]);
+  }, [
+    doc,
+    cache,
+    pageNumber,
+    scale,
+    width,
+    height,
+    queue,
+    priority,
+    reportFailure,
+  ]);
 
   // The text layer is cheap relative to the canvas and never cached: it is
   // rebuilt whenever the page mounts or the zoom changes.

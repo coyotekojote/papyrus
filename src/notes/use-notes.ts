@@ -81,6 +81,31 @@ interface Session {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+/**
+ * Everything the hook puts on screen, tagged with the document it describes.
+ * Held as one value (rather than five separate states) so an update can be
+ * refused wholesale when it belongs to a document that is no longer open.
+ */
+interface NotesView {
+  readonly path: string;
+  content: string;
+  loaded: boolean;
+  status: NotesStatus;
+  error: string | null;
+  conflict: string | null;
+}
+
+function newView(path: string): NotesView {
+  return {
+    path,
+    content: "",
+    loaded: false,
+    status: "loading",
+    error: null,
+    conflict: null,
+  };
+}
+
 function newSession(path: string): Session {
   return {
     path,
@@ -98,11 +123,7 @@ function message(cause: unknown): string {
 }
 
 export function useNotes(pdfPath: string): UseNotesResult {
-  const [content, setContentState] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [status, setStatus] = useState<NotesStatus>("loading");
-  const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<string | null>(null);
+  const [view, setView] = useState<NotesView>(() => newView(pdfPath));
 
   const sessionRef = useRef<Session>(newSession(pdfPath));
   const mountedRef = useRef(true);
@@ -112,21 +133,43 @@ export function useNotes(pdfPath: string): UseNotesResult {
   // pattern) rather than from the load effect below: an effect runs after the
   // browser has already been handed a frame, so the previous document's note
   // would show for that frame under the new document's name.
-  const [shownPath, setShownPath] = useState(pdfPath);
-  if (shownPath !== pdfPath) {
-    setShownPath(pdfPath);
-    setContentState("");
-    setLoaded(false);
-    setStatus("loading");
-    setError(null);
-    setConflict(null);
-  }
+  if (view.path !== pdfPath) setView(newView(pdfPath));
+
+  /**
+   * Applies a change to the note of `path`, and only while that is still the
+   * note on screen. The check reads the state React is actually holding rather
+   * than anything captured when the work started: `pdfPath` can move on
+   * several renders before an effect — or its cleanup — gets to run, so a
+   * closure over it, or a ref written from an effect, can still be pointing at
+   * a document the reader has left.
+   */
+  const updateView = useCallback(
+    (path: string, update: (current: NotesView) => NotesView) =>
+      setView((current) => (current.path === path ? update(current) : current)),
+    [],
+  );
+
+  const setStatus = useCallback(
+    (path: string, status: NotesStatus) =>
+      updateView(path, (current) => ({ ...current, status })),
+    [updateView],
+  );
+
+  /** Reports a load or save failure against the note it happened to. */
+  const setFailure = useCallback(
+    (path: string, reason: string) =>
+      updateView(path, (current) => ({
+        ...current,
+        error: reason,
+        status: "error",
+      })),
+    [updateView],
+  );
 
   /**
    * The session for the document on screen, or null while `pdfPath` has moved
    * on but the effect below has not yet swapped the session in — the previous
-   * document's session must not be written to, or read back into the UI, in
-   * that gap.
+   * document's session must not be written to in that gap.
    */
   const currentSession = useCallback(() => {
     const session = sessionRef.current;
@@ -135,11 +178,13 @@ export function useNotes(pdfPath: string): UseNotesResult {
 
   /**
    * A session outlives the component only to finish its last write. Anything
-   * belonging to a document the reader has left must not touch the UI.
+   * belonging to a session that has been replaced must not touch the UI.
+   * `updateView` is what guards against the document itself having changed —
+   * this only says whether the session is still the one being edited.
    */
   const isCurrent = useCallback(
-    (session: Session) => mountedRef.current && currentSession() === session,
-    [currentSession],
+    (session: Session) => mountedRef.current && sessionRef.current === session,
+    [],
   );
 
   const save = useCallback(
@@ -148,10 +193,10 @@ export function useNotes(pdfPath: string): UseNotesResult {
       while (session.loaded && !session.conflict) {
         const next = session.content;
         if (next === session.persisted.content) {
-          if (isCurrent(session)) setStatus("saved");
+          if (isCurrent(session)) setStatus(session.path, "saved");
           return;
         }
-        if (isCurrent(session)) setStatus("saving");
+        if (isCurrent(session)) setStatus(session.path, "saving");
         try {
           const modifiedAtMs = await saveNotes(
             session.path,
@@ -163,19 +208,16 @@ export function useNotes(pdfPath: string): UseNotesResult {
           continue;
         } catch (cause) {
           if (!(cause instanceof SidecarConflictError)) {
-            if (isCurrent(session)) {
-              setError(message(cause));
-              setStatus("error");
-            }
+            if (isCurrent(session)) setFailure(session.path, message(cause));
             return;
           }
           conflicts += 1;
           if (conflicts >= MAX_CONSECUTIVE_CONFLICTS) {
             if (isCurrent(session)) {
-              setError(
+              setFailure(
+                session.path,
                 "メモを保存できませんでした（ファイルが変更され続けています）",
               );
-              setStatus("error");
             }
             return;
           }
@@ -186,8 +228,7 @@ export function useNotes(pdfPath: string): UseNotesResult {
             // A failed reload must not reject: this promise is the flush
             // chain, and a rejection there would block every later save.
             if (isCurrent(session)) {
-              setError(message(reloadCause));
-              setStatus("error");
+              setFailure(session.path, message(reloadCause));
             }
             return;
           }
@@ -208,15 +249,18 @@ export function useNotes(pdfPath: string): UseNotesResult {
             modifiedAtMs: fresh.modifiedAtMs,
           };
           if (isCurrent(session)) {
-            setConflict(fresh.content);
-            setStatus("conflict");
-            setError(null);
+            updateView(session.path, (current) => ({
+              ...current,
+              conflict: fresh.content,
+              status: "conflict",
+              error: null,
+            }));
           }
           return;
         }
       }
     },
-    [isCurrent],
+    [isCurrent, setFailure, setStatus, updateView],
   );
 
   const scheduleSave = useCallback(
@@ -241,14 +285,16 @@ export function useNotes(pdfPath: string): UseNotesResult {
         session.content = loadedNotes.content;
         session.persisted = loadedNotes;
         if (!isCurrent(session)) return;
-        setContentState(loadedNotes.content);
-        setLoaded(true);
-        setStatus("saved");
+        updateView(session.path, (current) => ({
+          ...current,
+          content: loadedNotes.content,
+          loaded: true,
+          status: "saved",
+        }));
       })
       .catch((cause: unknown) => {
         if (!isCurrent(session)) return;
-        setError(message(cause));
-        setStatus("error");
+        setFailure(session.path, message(cause));
       });
 
     return () => {
@@ -263,7 +309,7 @@ export function useNotes(pdfPath: string): UseNotesResult {
         session.flush = session.flush.then(() => save(session));
       }
     };
-  }, [isCurrent, pdfPath, save]);
+  }, [isCurrent, pdfPath, save, setFailure, updateView]);
 
   useEffect(
     () => () => {
@@ -280,20 +326,23 @@ export function useNotes(pdfPath: string): UseNotesResult {
       // a winner. Both are refused.
       if (!session?.loaded || session.conflict) return;
       session.content = next(session.content);
-      setContentState(session.content);
-      setStatus("unsaved");
-      setError(null);
+      updateView(session.path, (current) => ({
+        ...current,
+        content: session.content,
+        status: "unsaved",
+        error: null,
+      }));
       scheduleSave(session, SAVE_DEBOUNCE_MS);
     },
-    [currentSession, scheduleSave],
+    [currentSession, scheduleSave, updateView],
   );
 
   return {
-    content,
-    loaded,
-    status,
-    error,
-    conflict,
+    content: view.content,
+    loaded: view.loaded,
+    status: view.status,
+    error: view.error,
+    conflict: view.conflict,
     setContent: useCallback((next: string) => edit(() => next), [edit]),
     initializeContent: useCallback(
       (text: string) => {
@@ -306,13 +355,13 @@ export function useNotes(pdfPath: string): UseNotesResult {
         if (!session?.loaded || session.conflict) return;
         if (session.content.trim() !== "") return;
         session.content = text;
-        setContentState(text);
+        updateView(session.path, (current) => ({ ...current, content: text }));
         // Deliberately no `setStatus`/`scheduleSave`: the file on disk is
         // still empty, and writing it now — just because a default was shown —
         // would create notes.md for a PDF the reader never actually annotated.
         // Autosave only starts once a real edit calls `edit()`.
       },
-      [currentSession],
+      [currentSession, updateView],
     ),
     insertQuote: useCallback(
       (highlight: Highlight) =>
@@ -337,18 +386,24 @@ export function useNotes(pdfPath: string): UseNotesResult {
       // `persisted` already carries the file's current mtime, so the retry
       // passes the freshness check and the editor's text wins.
       session.conflict = false;
-      setConflict(null);
-      setStatus("unsaved");
+      updateView(session.path, (current) => ({
+        ...current,
+        conflict: null,
+        status: "unsaved",
+      }));
       scheduleSave(session, 0);
-    }, [currentSession, scheduleSave]),
+    }, [currentSession, scheduleSave, updateView]),
     takeDisk: useCallback(() => {
       const session = currentSession();
       if (!session?.conflict) return;
       session.conflict = false;
       session.content = session.persisted.content;
-      setContentState(session.content);
-      setConflict(null);
-      setStatus("saved");
-    }, [currentSession]),
+      updateView(session.path, (current) => ({
+        ...current,
+        content: session.content,
+        conflict: null,
+        status: "saved",
+      }));
+    }, [currentSession, updateView]),
   };
 }
