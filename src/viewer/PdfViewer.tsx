@@ -307,15 +307,27 @@ export function PdfViewer({
   // Changing the setting is a deliberate act on the app, so it lands on the
   // document being read as well — waiting for the next one to open would look
   // like the setting did nothing. Only a change moves these: the toolbar's own
-  // toggles stand until the reader touches the setting again.
-  useEffect(() => setBinding(defaultBinding), [defaultBinding]);
+  // toggles stand until the reader touches the setting again. The previously
+  // applied value is kept in state and compared while rendering (React's
+  // "adjusting state when a prop changes" pattern) rather than from an effect,
+  // which would show the document in the old mode for a frame first.
+  const [appliedBinding, setAppliedBinding] = useState(defaultBinding);
+  if (appliedBinding !== defaultBinding) {
+    setAppliedBinding(defaultBinding);
+    setBinding(defaultBinding);
+  }
   // Also re-applies when the screen crosses the compact breakpoint (a window
   // resize, an iPad rotating): a spread that no longer fits is dropped back
   // to single, and single goes back to the setting once there is room again.
-  useEffect(
-    () => setViewMode(defaultViewModeForScreen(defaultViewMode, isCompact)),
-    [defaultViewMode, isCompact],
+  const defaultViewModeHere = defaultViewModeForScreen(
+    defaultViewMode,
+    isCompact,
   );
+  const [appliedViewMode, setAppliedViewMode] = useState(defaultViewModeHere);
+  if (appliedViewMode !== defaultViewModeHere) {
+    setAppliedViewMode(defaultViewModeHere);
+    setViewMode(defaultViewModeHere);
+  }
 
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
@@ -379,18 +391,17 @@ export function PdfViewer({
     loaded: false,
     conflict: null,
   });
-  const cacheRef = useRef<PageRenderCache | null>(null);
-  cacheRef.current ??= new PageRenderCache();
-  const cache = cacheRef.current;
+  // Built with `useMemo` rather than a lazily-filled ref so it is readable
+  // while rendering (refs are not); the effect below clears whatever it hands
+  // back, so a memo React chose to drop would not strand its canvases.
+  const cache = useMemo(() => new PageRenderCache(), []);
   /**
    * One render queue for the document's whole lifetime (issue #35): a fresh
    * instance per render would just let every `PageCanvas` mount straight
    * through it again, defeating the point of serializing renders across
    * them.
    */
-  const renderQueueRef = useRef<RenderQueue | null>(null);
-  renderQueueRef.current ??= new RenderQueue();
-  const renderQueue = renderQueueRef.current;
+  const renderQueue = useMemo(() => new RenderQueue(), []);
 
   /** DOM index we scrolled to on purpose; scroll events ignore it until reached. */
   const pendingDomIndexRef = useRef<number | null>(null);
@@ -411,10 +422,8 @@ export function PdfViewer({
     total,
   );
   const spreadIndexRef = useRef(spreadIndex);
-  spreadIndexRef.current = spreadIndex;
   // Read inside the wheel listener so it never has to be re-registered.
   const bindingRef = useRef(binding);
-  bindingRef.current = binding;
   // Read inside the pinch listener, for the same reason.
   const zoomRef = useRef(zoom);
   /** A pinch starting while a clip drag is being made would fight it for the
@@ -424,8 +433,11 @@ export function PdfViewer({
   // Written after the commit rather than during the render: React can throw
   // a render away and redo it, and a discarded render must not leave these
   // pointing at state that never became the UI. (Same reasoning as the
-  // createClipRef/dragRef effect further down.)
+  // createClipRef/dragRef effect further down.) Declared ahead of every effect
+  // that reads them, so they are already current by the time those run.
   useEffect(() => {
+    spreadIndexRef.current = spreadIndex;
+    bindingRef.current = binding;
     zoomRef.current = zoom;
     clipModeRef.current = clipMode;
   });

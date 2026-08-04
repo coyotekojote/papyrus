@@ -20,10 +20,6 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      // react-hooks v7 で追加されたルール。既存コード 9 ファイル 21 箇所が
-      // 引っかかるため、修正が済むまで warn に緩める
-      "react-hooks/refs": "warn",
-      "react-hooks/set-state-in-effect": "warn",
       "react-refresh/only-export-components": [
         "warn",
         { allowConstantExport: true },

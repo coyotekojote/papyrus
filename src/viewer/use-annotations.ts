@@ -40,10 +40,29 @@ export interface UseAnnotationsResult {
  * mutation on top of the fresh contents, and saves again — so neither the
  * other device's highlights nor the local ones are lost.
  */
+/**
+ * Everything the hook puts on screen, tagged with the document it describes.
+ * Held as one value (rather than three separate states) so an update can be
+ * refused wholesale when it belongs to a document that is no longer open.
+ */
+interface AnnotationsView {
+  readonly path: string;
+  annotations: Annotations;
+  loaded: boolean;
+  error: string | null;
+}
+
+function newView(path: string): AnnotationsView {
+  return {
+    path,
+    annotations: emptyAnnotations(),
+    loaded: false,
+    error: null,
+  };
+}
+
 export function useAnnotations(pdfPath: string): UseAnnotationsResult {
-  const [annotations, setAnnotations] = useState<Annotations>(emptyAnnotations);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<AnnotationsView>(() => newView(pdfPath));
   const loadedRef = useRef(false);
 
   /** What the sidecar file held at the last load/save, with its mtime. */
@@ -63,10 +82,44 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
    */
   const generationRef = useRef(0);
 
+  /**
+   * Whether a generation is still the one being saved. Says nothing about
+   * which document is on screen — `updateView` is what guards that.
+   */
   const isCurrent = useCallback(
     (generation: number) =>
       mountedRef.current && generationRef.current === generation,
     [],
+  );
+
+  // Switching documents clears what the previous one put on screen. Done while
+  // rendering (React's "adjusting state when a prop changes" pattern) rather
+  // than from the load effect below, which only runs once the browser has
+  // already been handed a frame showing the old document's annotations.
+  if (view.path !== pdfPath) setView(newView(pdfPath));
+
+  /**
+   * Applies a change to the annotations of `path`, and only while those are
+   * still the ones on screen. The check reads the state React is actually
+   * holding rather than anything captured when the work started: `pdfPath` can
+   * move on several renders before an effect — or its cleanup — gets to run,
+   * so a closure over it, or a ref written from an effect, can still be
+   * pointing at a document the reader has left.
+   */
+  const updateView = useCallback(
+    (path: string, update: (current: AnnotationsView) => AnnotationsView) =>
+      setView((current) => (current.path === path ? update(current) : current)),
+    [],
+  );
+
+  /** Reports a load or save failure against the document it happened to. */
+  const setError = useCallback(
+    (path: string, cause: unknown) =>
+      updateView(path, (current) => ({
+        ...current,
+        error: cause instanceof Error ? cause.message : String(cause),
+      })),
+    [updateView],
   );
 
   useEffect(() => {
@@ -82,27 +135,27 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
     // make this document's first save wait on the previous one's — which may
     // still be hanging on a slow (or stalled) sidecar write.
     flushRef.current = Promise.resolve();
-    setLoaded(false);
-    setError(null);
-    setAnnotations(emptyAnnotations());
 
     void loadAnnotations(pdfPath)
       .then((result) => {
         if (!isCurrent(generation)) return;
         persistedRef.current = result;
-        setAnnotations(result.annotations);
         loadedRef.current = true;
-        setLoaded(true);
+        updateView(pdfPath, (current) => ({
+          ...current,
+          annotations: result.annotations,
+          loaded: true,
+        }));
       })
       .catch((cause: unknown) => {
         if (!isCurrent(generation)) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(pdfPath, cause);
       });
 
     return () => {
       mountedRef.current = false;
     };
-  }, [isCurrent, pdfPath]);
+  }, [isCurrent, pdfPath, setError, updateView]);
 
   const applyPending = useCallback(
     (base: Annotations) =>
@@ -136,6 +189,7 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
           if (conflicts >= MAX_SAVE_ATTEMPTS) {
             if (isCurrent(generation)) {
               setError(
+                pdfPath,
                 "注釈を保存できませんでした（ファイルが変更され続けています）",
               );
             }
@@ -149,26 +203,26 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
             const fresh = await loadAnnotations(pdfPath);
             if (!isCurrent(generation)) return;
             persistedRef.current = fresh;
-            setAnnotations(applyPending(fresh.annotations));
+            // Applied here rather than inside the updater: `applyPending`
+            // reads the pending queue, which the loop below trims as soon as
+            // a save lands — an updater React runs later would rebase onto a
+            // queue that no longer holds the mutations being rebased.
+            const rebased = applyPending(fresh.annotations);
+            updateView(pdfPath, (current) => ({
+              ...current,
+              annotations: rebased,
+            }));
             continue;
           } catch (reloadCause) {
-            if (isCurrent(generation)) {
-              setError(
-                reloadCause instanceof Error
-                  ? reloadCause.message
-                  : String(reloadCause),
-              );
-            }
+            if (isCurrent(generation)) setError(pdfPath, reloadCause);
             return;
           }
         }
-        if (isCurrent(generation)) {
-          setError(cause instanceof Error ? cause.message : String(cause));
-        }
+        if (isCurrent(generation)) setError(pdfPath, cause);
         return;
       }
     }
-  }, [applyPending, isCurrent, pdfPath]);
+  }, [applyPending, isCurrent, pdfPath, setError, updateView]);
 
   const mutate = useCallback(
     (fn: Mutation) => {
@@ -176,17 +230,20 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
       // disk with an empty base — refuse instead.
       if (!mountedRef.current || !loadedRef.current) return;
       pendingRef.current.push(fn);
-      setAnnotations((current) => fn(current));
-      setError(null);
+      updateView(pdfPath, (current) => ({
+        ...current,
+        annotations: fn(current.annotations),
+        error: null,
+      }));
       flushRef.current = flushRef.current.then(flush);
     },
-    [flush],
+    [flush, pdfPath, updateView],
   );
 
   return {
-    annotations,
-    loaded,
-    error,
+    annotations: view.annotations,
+    loaded: view.loaded,
+    error: view.error,
     addHighlight: useCallback(
       (highlight: Highlight) =>
         mutate((current) => addHighlight(current, highlight)),

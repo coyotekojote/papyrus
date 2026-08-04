@@ -61,7 +61,9 @@ function describeError(cause: unknown): string {
 }
 
 function App() {
-  const [recentFiles, setRecentFiles] = useState<readonly RecentFile[]>([]);
+  const [recentFiles, setRecentFiles] = useState<readonly RecentFile[]>(() =>
+    loadRecentFiles(window.localStorage),
+  );
   const [openDocument, setOpenDocument] = useState<OpenDocument | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -69,8 +71,20 @@ function App() {
 
   const settings = useSettings();
 
+  /**
+   * Mirrors `openDocument` for the callbacks that need the document currently
+   * on screen without being re-created for each one — the unmount cleanup and
+   * the debounced page save, both of which run long after the render that
+   * produced the document. Kept in sync from an effect rather than during
+   * render (refs must not be written while rendering); the two places that
+   * swap the document out — `openPath` and `handleClose` — write it directly
+   * as well, so a second call landing before the next commit still sees the
+   * first one's result.
+   */
   const openDocumentRef = useRef<OpenDocument | null>(null);
-  openDocumentRef.current = openDocument;
+  useEffect(() => {
+    openDocumentRef.current = openDocument;
+  }, [openDocument]);
 
   /**
    * Mirrors `recentFiles`. `rememberRecentFiles` reads this instead of going
@@ -97,10 +111,6 @@ function App() {
    * huge PDF does not keep spending cycles once nobody is looking at it.
    */
   const pageSizeAbortRef = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    setRecentFiles(loadRecentFiles(window.localStorage));
-  }, []);
 
   /**
    * Computes the next list from `recentFilesRef` and writes it to storage
@@ -254,14 +264,16 @@ function App() {
         // a resolved bookmark URL is percent-encoded (e.g. `%E8%AB%96%E6%96%87.pdf`)
         // and `fileNameFromPath` does not decode it, so the display name would
         // otherwise come out mangled.
-        setOpenDocument({
+        const next: OpenDocument = {
           doc,
           pageSizes,
           path: effectivePath,
           name: fileNameFromPath(path),
           recentPath: path,
           initialPage,
-        });
+        };
+        openDocumentRef.current = next;
+        setOpenDocument(next);
         if (previous) void previous.doc.destroy();
 
         // Keyed on the original `path`, not `effectivePath`: a resolved
@@ -322,6 +334,7 @@ function App() {
     // The page the reader was last on would otherwise wait out the debounce
     // (or simply never fire again for a document about to close) and be lost.
     flushPendingPageSave();
+    openDocumentRef.current = null;
     setOpenDocument((current) => {
       if (current) void current.doc.destroy();
       return null;

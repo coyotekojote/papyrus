@@ -368,6 +368,28 @@ describe("useAnnotations", () => {
     ).toEqual(["next-doc"]);
   });
 
+  it("clears the previous document's highlights when the path changes", async () => {
+    vi.mocked(loadAnnotations).mockResolvedValue({
+      annotations: { ...emptyAnnotations(), highlights: [highlight("first")] },
+      modifiedAtMs: 111,
+    });
+
+    const { result, rerender } = renderHook(
+      ({ path }: { path: string }) => useAnnotations(path),
+      { initialProps: { path: PATH } },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+    expect(result.current.annotations.highlights).toHaveLength(1);
+
+    // Never resolves, so the assertions below land while the second document
+    // is still loading — the first one's highlights must already be gone.
+    vi.mocked(loadAnnotations).mockReturnValue(new Promise(() => {}));
+    rerender({ path: "/papers/other.pdf" });
+
+    expect(result.current.annotations.highlights).toHaveLength(0);
+    expect(result.current.loaded).toBe(false);
+  });
+
   it("ignores mutations before the initial load resolves", async () => {
     let resolveLoad!: (value: {
       annotations: Annotations;
