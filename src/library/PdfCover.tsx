@@ -61,19 +61,26 @@ type CoverState =
  */
 export function PdfCover({ path, name }: PdfCoverProps) {
   const cached = coverCache.get(path);
-  const [state, setState] = useState<CoverState>(
+  const [state, setState] = useState<CoverState>(() =>
     cached ? { status: "ready", src: cached } : { status: "loading" },
   );
 
+  // A tile is normally keyed by its path, so `path` changing under one is the
+  // exception rather than the rule — but when it does happen the previous
+  // file's cover must not stay on screen. Reset while rendering (React's
+  // "adjusting state when a prop changes" pattern) rather than from an effect,
+  // which would paint the stale cover for a frame first.
+  const [shownPath, setShownPath] = useState(path);
+  if (shownPath !== path) {
+    setShownPath(path);
+    setState(cached ? { status: "ready", src: cached } : { status: "loading" });
+  }
+
   useEffect(() => {
-    const fromCache = coverCache.get(path);
-    if (fromCache) {
-      setState({ status: "ready", src: fromCache });
-      return;
-    }
+    // Already painted from the cache; nothing to open.
+    if (cached) return;
 
     let cancelled = false;
-    setState({ status: "loading" });
 
     // Queued rather than started here, so a library's worth of tiles opens one
     // document at a time. A tile that goes away before its turn — filtered out
@@ -97,7 +104,7 @@ export function PdfCover({ path, name }: PdfCoverProps) {
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, cached]);
 
   if (state.status === "ready") {
     return <img className="cover__image" src={state.src} alt="" />;

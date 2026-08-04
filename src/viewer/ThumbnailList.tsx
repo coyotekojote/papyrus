@@ -66,9 +66,10 @@ export function ThumbnailList({
 
   // Thumbnails are rendered at their own scale, so they need a cache of their
   // own rather than evicting the main viewer's full-size pages.
-  const cacheRef = useRef<PageRenderCache | null>(null);
-  cacheRef.current ??= new PageRenderCache();
-  const cache = cacheRef.current;
+  // Built with `useMemo` rather than a lazily-filled ref so it is readable
+  // while rendering (refs are not); should React ever drop the memo, the
+  // effect below clears the cache it hands back.
+  const cache = useMemo(() => new PageRenderCache(), []);
   useEffect(() => () => cache.clear(), [cache]);
 
   /** Display size and render scale of every page, in page order. */

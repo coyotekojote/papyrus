@@ -65,14 +65,9 @@ export function useTranslation(): UseTranslationResult {
       });
   }, []);
 
-  /** The state a callback should read, without re-creating the callback. */
-  const stateRef = useRef(state);
-  stateRef.current = state;
-
   const retry = useCallback(() => {
-    const current = stateRef.current;
-    if (current.status === "error") start(current.source);
-  }, [start]);
+    if (state.status === "error") start(state.source);
+  }, [start, state]);
 
   const dismiss = useCallback(() => {
     // Bumped so an answer already in flight cannot reopen the panel.

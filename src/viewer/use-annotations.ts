@@ -62,16 +62,38 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
    * touch the state of the current one.
    */
   const generationRef = useRef(0);
+  /**
+   * The path the current generation belongs to. `generationRef` is only bumped
+   * from the effect below, which runs a frame after `pdfPath` changes; without
+   * this, a load for the previous document resolving in that gap would still
+   * look current and write its annotations into the new document's state.
+   */
+  const generationPathRef = useRef(pdfPath);
 
   const isCurrent = useCallback(
     (generation: number) =>
-      mountedRef.current && generationRef.current === generation,
-    [],
+      mountedRef.current &&
+      generationRef.current === generation &&
+      generationPathRef.current === pdfPath,
+    [pdfPath],
   );
+
+  // Switching documents clears what the previous one put on screen. Done while
+  // rendering (React's "adjusting state when a prop changes" pattern) rather
+  // than from the load effect below, which only runs once the browser has
+  // already been handed a frame showing the old document's annotations.
+  const [shownPath, setShownPath] = useState(pdfPath);
+  if (shownPath !== pdfPath) {
+    setShownPath(pdfPath);
+    setLoaded(false);
+    setError(null);
+    setAnnotations(emptyAnnotations());
+  }
 
   useEffect(() => {
     mountedRef.current = true;
     const generation = (generationRef.current += 1);
+    generationPathRef.current = pdfPath;
     loadedRef.current = false;
     pendingRef.current = [];
     persistedRef.current = {
@@ -82,9 +104,6 @@ export function useAnnotations(pdfPath: string): UseAnnotationsResult {
     // make this document's first save wait on the previous one's — which may
     // still be hanging on a slow (or stalled) sidecar write.
     flushRef.current = Promise.resolve();
-    setLoaded(false);
-    setError(null);
-    setAnnotations(emptyAnnotations());
 
     void loadAnnotations(pdfPath)
       .then((result) => {

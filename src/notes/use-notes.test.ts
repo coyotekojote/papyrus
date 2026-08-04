@@ -376,4 +376,25 @@ describe("useNotes", () => {
     expect(result.current.content).toBe("二冊目");
     expect(loadNotes).toHaveBeenLastCalledWith("/papers/other.pdf");
   });
+
+  it("clears the previous document's note when the path changes", async () => {
+    vi.mocked(loadNotes).mockResolvedValue({
+      content: "一冊目",
+      modifiedAtMs: 111,
+    });
+    const { result, rerender } = renderHook(({ path }) => useNotes(path), {
+      initialProps: { path: PATH },
+    });
+    await settle();
+    expect(result.current.content).toBe("一冊目");
+
+    // Never resolves, so the assertions below land while the second document
+    // is still loading — the first one's text must already be gone by then.
+    vi.mocked(loadNotes).mockReturnValue(new Promise(() => {}));
+    rerender({ path: "/papers/other.pdf" });
+
+    expect(result.current.content).toBe("");
+    expect(result.current.loaded).toBe(false);
+    expect(result.current.status).toBe("loading");
+  });
 });

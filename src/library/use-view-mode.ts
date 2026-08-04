@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import {
   loadLibraryViewMode,
   saveLibraryViewMode,
@@ -13,15 +13,9 @@ export function useLibraryViewMode(): [
   LibraryViewMode,
   (mode: LibraryViewMode) => void,
 ] {
-  const [mode, setMode] = useState<LibraryViewMode>(
+  const [mode, setMode] = useState<LibraryViewMode>(() =>
     loadLibraryViewMode(window.localStorage),
   );
-
-  // Re-read on mount so a value written after this hook's initial state was
-  // computed (e.g. jsdom resetting storage between tests) is not stale.
-  useEffect(() => {
-    setMode(loadLibraryViewMode(window.localStorage));
-  }, []);
 
   const update = useCallback((next: LibraryViewMode) => {
     setMode(next);

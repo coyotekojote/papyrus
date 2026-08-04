@@ -52,6 +52,30 @@ export function PageCanvas({
   const textLayerRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Everything the render effect below keys off. A change to any of it starts
+   * a fresh attempt, so the previous one's failure must stop being shown —
+   * done here, while rendering (React's "adjusting state when a prop changes"
+   * pattern), rather than from the effect, which would leave a stale error
+   * sitting over a canvas that painted fine for a frame first. Kept in step
+   * with that effect's dependency list.
+   */
+  const attempt: readonly unknown[] = [
+    doc,
+    cache,
+    pageNumber,
+    scale,
+    width,
+    height,
+    queue,
+    priority,
+  ];
+  const [shownAttempt, setShownAttempt] = useState(attempt);
+  if (shownAttempt.some((value, index) => value !== attempt[index])) {
+    setShownAttempt(attempt);
+    setError(null);
+  }
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -59,12 +83,10 @@ export function PageCanvas({
     const cached = cache.get(pageNumber, scale);
     if (cached) {
       host.replaceChildren(cached);
-      setError(null);
       return;
     }
 
     const controller = new AbortController();
-    setError(null);
 
     // Two-stage rendering (issue #37) only ever applies to the page actually
     // on screen (`priority === "visible"`) going through a queue at all —

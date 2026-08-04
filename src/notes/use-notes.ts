@@ -107,13 +107,39 @@ export function useNotes(pdfPath: string): UseNotesResult {
   const sessionRef = useRef<Session>(newSession(pdfPath));
   const mountedRef = useRef(true);
 
+  // Switching documents clears everything the previous one put on screen.
+  // Done while rendering (React's "adjusting state when a prop changes"
+  // pattern) rather than from the load effect below: an effect runs after the
+  // browser has already been handed a frame, so the previous document's note
+  // would show for that frame under the new document's name.
+  const [shownPath, setShownPath] = useState(pdfPath);
+  if (shownPath !== pdfPath) {
+    setShownPath(pdfPath);
+    setContentState("");
+    setLoaded(false);
+    setStatus("loading");
+    setError(null);
+    setConflict(null);
+  }
+
+  /**
+   * The session for the document on screen, or null while `pdfPath` has moved
+   * on but the effect below has not yet swapped the session in — the previous
+   * document's session must not be written to, or read back into the UI, in
+   * that gap.
+   */
+  const currentSession = useCallback(() => {
+    const session = sessionRef.current;
+    return session.path === pdfPath ? session : null;
+  }, [pdfPath]);
+
   /**
    * A session outlives the component only to finish its last write. Anything
    * belonging to a document the reader has left must not touch the UI.
    */
   const isCurrent = useCallback(
-    (session: Session) => mountedRef.current && sessionRef.current === session,
-    [],
+    (session: Session) => mountedRef.current && currentSession() === session,
+    [currentSession],
   );
 
   const save = useCallback(
@@ -208,11 +234,6 @@ export function useNotes(pdfPath: string): UseNotesResult {
     mountedRef.current = true;
     const session = newSession(pdfPath);
     sessionRef.current = session;
-    setContentState("");
-    setLoaded(false);
-    setStatus("loading");
-    setError(null);
-    setConflict(null);
 
     void loadNotes(pdfPath)
       .then((loadedNotes) => {
@@ -253,18 +274,18 @@ export function useNotes(pdfPath: string): UseNotesResult {
 
   const edit = useCallback(
     (next: (current: string) => string) => {
-      const session = sessionRef.current;
+      const session = currentSession();
       // Before the initial load, a save would write an empty note over
       // whatever is on disk. While a conflict is open, it would silently pick
       // a winner. Both are refused.
-      if (!session.loaded || session.conflict) return;
+      if (!session?.loaded || session.conflict) return;
       session.content = next(session.content);
       setContentState(session.content);
       setStatus("unsaved");
       setError(null);
       scheduleSave(session, SAVE_DEBOUNCE_MS);
     },
-    [scheduleSave],
+    [currentSession, scheduleSave],
   );
 
   return {
@@ -274,22 +295,25 @@ export function useNotes(pdfPath: string): UseNotesResult {
     error,
     conflict,
     setContent: useCallback((next: string) => edit(() => next), [edit]),
-    initializeContent: useCallback((text: string) => {
-      const session = sessionRef.current;
-      // Same refusals as `edit`: before the load, or mid-conflict, nothing
-      // here is safe to overwrite. A note with real text in it is left
-      // alone — this is a one-time default, not something the reader asked
-      // to happen — but one that is only whitespace still counts as empty
-      // and gets the default, the same as no note at all.
-      if (!session.loaded || session.conflict) return;
-      if (session.content.trim() !== "") return;
-      session.content = text;
-      setContentState(text);
-      // Deliberately no `setStatus`/`scheduleSave`: the file on disk is
-      // still empty, and writing it now — just because a default was shown —
-      // would create notes.md for a PDF the reader never actually annotated.
-      // Autosave only starts once a real edit calls `edit()`.
-    }, []),
+    initializeContent: useCallback(
+      (text: string) => {
+        const session = currentSession();
+        // Same refusals as `edit`: before the load, or mid-conflict, nothing
+        // here is safe to overwrite. A note with real text in it is left
+        // alone — this is a one-time default, not something the reader asked
+        // to happen — but one that is only whitespace still counts as empty
+        // and gets the default, the same as no note at all.
+        if (!session?.loaded || session.conflict) return;
+        if (session.content.trim() !== "") return;
+        session.content = text;
+        setContentState(text);
+        // Deliberately no `setStatus`/`scheduleSave`: the file on disk is
+        // still empty, and writing it now — just because a default was shown —
+        // would create notes.md for a PDF the reader never actually annotated.
+        // Autosave only starts once a real edit calls `edit()`.
+      },
+      [currentSession],
+    ),
     insertQuote: useCallback(
       (highlight: Highlight) =>
         edit((current) =>
@@ -308,23 +332,23 @@ export function useNotes(pdfPath: string): UseNotesResult {
       [edit],
     ),
     keepLocal: useCallback(() => {
-      const session = sessionRef.current;
-      if (!session.conflict) return;
+      const session = currentSession();
+      if (!session?.conflict) return;
       // `persisted` already carries the file's current mtime, so the retry
       // passes the freshness check and the editor's text wins.
       session.conflict = false;
       setConflict(null);
       setStatus("unsaved");
       scheduleSave(session, 0);
-    }, [scheduleSave]),
+    }, [currentSession, scheduleSave]),
     takeDisk: useCallback(() => {
-      const session = sessionRef.current;
-      if (!session.conflict) return;
+      const session = currentSession();
+      if (!session?.conflict) return;
       session.conflict = false;
       session.content = session.persisted.content;
       setContentState(session.content);
       setConflict(null);
       setStatus("saved");
-    }, []),
+    }, [currentSession]),
   };
 }
