@@ -744,6 +744,89 @@ describe("PdfViewer", () => {
         expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
       });
     });
+
+    describe("handleScroll re-issues scrollTo when the engine re-snaps over a pending target (issue #68 review)", () => {
+      // Real-device telemetry: a panel opening issues a reposition
+      // `scrollTo` for the pending spread at the new client width, but
+      // WebKit can re-snap the container from its *old* pixel offset against
+      // the *new* box widths, landing on a different spread and overwriting
+      // that `scrollTo` after the fact. The pending guard alone keeps
+      // `currentPage` correct (the mismatched event never passes it), but
+      // does nothing to pull the *view* back — nothing was re-issuing
+      // `scrollTo` after the engine's own overwrite. These tests exercise
+      // that recovery directly, once a pending target is already set.
+
+      /** Fires a `scroll` event at `left` and lets the rAF handler run. */
+      async function scrollTo(left: number) {
+        const element = scroller();
+        element.scrollLeft = left;
+        fireEvent.scroll(element);
+        await flushScroll();
+      }
+
+      it("re-issues scrollTo at the pending spread's offset and leaves currentPage alone", async () => {
+        const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        // Settle on domIndex 0 for real, clearing the pending guard the
+        // initial resize set, so the pending target below is unambiguous.
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Navigating sets a fresh pending target (domIndex 1) and its own
+        // `scrollTo`; `currentPage` moves optimistically, ahead of the
+        // scroll actually landing there.
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        scrollToSpy.mockClear();
+
+        // A scroll landing on domIndex 3's slot instead — standing in for
+        // the engine's own re-snap overwriting the pending `scrollTo` above.
+        await scrollTo(3 * 800);
+
+        // currentPage must not have been dragged along to whatever spread
+        // this stray position nominally points at.
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        // The view must have been fought back to the pending spread's own
+        // offset (domIndex 1 at an 800px box width: 1 * 800 = 800), not left
+        // wherever the engine's re-snap put it.
+        expect(scrollToSpy).toHaveBeenCalledWith({
+          left: 800,
+          behavior: "auto",
+        });
+
+        scrollToSpy.mockRestore();
+      });
+
+      it("stops re-issuing scrollTo once the recovery cap is reached, without corrupting currentPage", async () => {
+        const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        await scrollTo(0);
+
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        scrollToSpy.mockClear();
+
+        // A browser that kept re-snapping away from the pending spread on
+        // every single event — the pathological case the cap exists for.
+        // MAX_RESNAP_RECOVERY_ATTEMPTS is 8 as of this writing; this fires
+        // more than that so the cap is what stops it, not running out of
+        // events.
+        for (let i = 0; i < 10; i += 1) {
+          await scrollTo(3 * 800);
+        }
+
+        expect(scrollToSpy).toHaveBeenCalledTimes(8);
+        // Giving up on re-issuing scrollTo must not also give up on the
+        // pending guard: currentPage still must not have been corrupted.
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        scrollToSpy.mockRestore();
+      });
+    });
   });
 
   it("closes the document from the toolbar", async () => {

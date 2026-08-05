@@ -97,6 +97,15 @@ import {
   type ZoomState,
 } from "./zoom";
 
+/**
+ * Cap on how many times `handleScroll` will re-issue `scrollTo` to fight
+ * back against the engine re-snapping over it (issue #68 review, see the
+ * comment where this is used) before giving up. Real telemetry shows this
+ * settling in a single re-issue; the cap only exists so a browser that kept
+ * fighting back indefinitely could not turn this into a busy loop.
+ */
+const MAX_RESNAP_RECOVERY_ATTEMPTS = 8;
+
 /** Spreads rendered on each side of the visible one. */
 const OVERSCAN = 1;
 
@@ -409,6 +418,13 @@ export function PdfViewer({
 
   /** DOM index we scrolled to on purpose; scroll events ignore it until reached. */
   const pendingDomIndexRef = useRef<number | null>(null);
+  /**
+   * How many times `handleScroll` has re-issued `scrollTo` while chasing the
+   * current `pendingDomIndexRef` (issue #68 review). Reset alongside every
+   * place that sets a new pending target, so each target gets its own fresh
+   * budget of recovery attempts.
+   */
+  const resnapRecoveryAttemptsRef = useRef(0);
   const scrollFrameRef = useRef<number | null>(null);
   /** Which way the reader is scrolling, updated alongside `scrollLeft` in
    * {@link handleScroll}; read (not depended on) by the prefetch effect. */
@@ -717,6 +733,7 @@ export function PdfViewer({
       setCurrentPage(leadPage(spreads[next]));
       const domIndex = toDomIndex(next, total, binding);
       pendingDomIndexRef.current = domIndex;
+      resnapRecoveryAttemptsRef.current = 0;
       scrollerRef.current?.scrollTo({
         left: scrollOffsetForItem(layout, domIndex, viewportWidth),
         behavior,
@@ -748,6 +765,7 @@ export function PdfViewer({
     if (!scroller || total === 0) return;
     const domIndex = toDomIndex(spreadIndexRef.current, total, binding);
     pendingDomIndexRef.current = domIndex;
+    resnapRecoveryAttemptsRef.current = 0;
     scroller.scrollTo({
       left: scrollOffsetForItem(layout, domIndex, viewportWidth),
       behavior: "auto",
@@ -777,6 +795,7 @@ export function PdfViewer({
       total,
       binding,
     );
+    resnapRecoveryAttemptsRef.current = 0;
   }, [notesOpen, highlightsOpen, sidebarOpen, total, binding]);
 
   /**
@@ -838,7 +857,35 @@ export function PdfViewer({
 
       const nearest = nearestItemIndex(layout, left, viewportWidth);
       if (pendingDomIndexRef.current !== null) {
-        if (pendingDomIndexRef.current !== nearest) return;
+        const pending = pendingDomIndexRef.current;
+        if (pending !== nearest) {
+          // The pending guard alone stops this stray position from
+          // corrupting `currentPage`, but not from staying on screen (issue
+          // #68 review). Telemetry from a real device during a notes-panel
+          // open showed: the reposition layout effect issues
+          // `scrollTo(11872)` for spread 14 at the new 848px client width;
+          // the very next `scroll` event reports `left: 16976`, which is
+          // `16800` (the *pre-resize* pixel offset) re-snapped by the engine
+          // against the *new* 848px boxes (16800 / 848 ≈ 19.8 → spread 20) —
+          // WebKit re-snapping the scroll-snap container from its old raw
+          // offset on resize, landing after and overwriting the `scrollTo`
+          // this component already issued. `currentPage` stays correct
+          // (pending guards it), but the visible scroll position is left on
+          // the wrong spread with nothing to pull it back. Re-issuing
+          // `scrollTo` here fights back the same way: real telemetry shows
+          // this settling within a single re-issue, and the attempt cap
+          // above only guards against a browser that kept fighting back.
+          if (
+            resnapRecoveryAttemptsRef.current < MAX_RESNAP_RECOVERY_ATTEMPTS
+          ) {
+            resnapRecoveryAttemptsRef.current += 1;
+            scroller.scrollTo({
+              left: scrollOffsetForItem(layout, pending, viewportWidth),
+              behavior: "auto",
+            });
+          }
+          return;
+        }
         pendingDomIndexRef.current = null;
       }
       const spread = domSpreads[nearest];
