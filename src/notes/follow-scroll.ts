@@ -74,9 +74,15 @@ function measureLine(
   mirror.style.border = "0";
   mirror.style.width = `${width}px`;
   mirror.style.height = "auto";
-  mirror.style.position = "absolute";
+  // `fixed`, not `absolute`: an absolutely positioned box still counts towards
+  // the document's scrollable overflow, so a long note would stretch the page
+  // out and flash a body scrollbar for the moment the mirror is attached.
+  // Taking it out of the flow entirely — and off to the side — keeps the
+  // measurement invisible in every sense. `offsetTop` is unaffected: the
+  // mirror is positioned either way, so it stays the marker's offset parent.
+  mirror.style.position = "fixed";
   mirror.style.top = "0";
-  mirror.style.left = "0";
+  mirror.style.left = "-10000px";
   mirror.style.visibility = "hidden";
   mirror.style.pointerEvents = "none";
   mirror.style.overflow = "hidden";
@@ -84,7 +90,7 @@ function measureLine(
   // A zero-width marker at the target: its box is on the line the character
   // at `offset` starts, which is what has to come into view.
   const marker = doc.createElement("span");
-  marker.textContent = "​";
+  marker.textContent = "\u200B";
   mirror.textContent = textarea.value.slice(0, offset);
   mirror.append(marker);
 
