@@ -465,7 +465,18 @@ export function PdfViewer({
   // pointing at state that never became the UI. (Same reasoning as the
   // createClipRef/dragRef effect further down.) Declared ahead of every effect
   // that reads them, so they are already current by the time those run.
-  useEffect(() => {
+  //
+  // Must be a layout effect, not a passive one (issue #68 review): the
+  // reposition effect below reads `spreadIndexRef` and is itself a layout
+  // effect now (fit zoom ties spread widths to `viewportWidth`, so it has to
+  // run before paint — see its own comment). Layout effects in one commit
+  // run in declaration order, so keeping this one first is what makes the
+  // reposition effect see *this* commit's `spreadIndex`, not the previous
+  // commit's. A passive effect here would instead run after every layout
+  // effect in the commit, including that one — a scroll landing in the same
+  // commit as a resize or other layout change could then have the
+  // reposition effect scroll back to a spread that is already stale.
+  useLayoutEffect(() => {
     spreadIndexRef.current = spreadIndex;
     bindingRef.current = binding;
     zoomRef.current = zoom;
