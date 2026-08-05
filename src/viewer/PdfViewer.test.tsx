@@ -766,14 +766,24 @@ describe("PdfViewer", () => {
         await flushScroll();
       }
 
-      // A failed assertion would skip a per-test `mockRestore()`, leaking
-      // the `Element.prototype.scrollTo` spy into later tests.
+      // A failed assertion would skip an inline `mockRestore()`, leaking the
+      // `Element.prototype.scrollTo` spy into later tests — restoring it in
+      // `afterEach` runs either way. Deliberately narrower than
+      // `vi.restoreAllMocks()`, which would also tear down spies other
+      // describes set up once at collection time (the wheel-scrolling
+      // block's `scrollBy` spy, for one) before their own tests ever run.
+      let scrollToSpy: ReturnType<typeof vi.spyOn> | undefined;
+      function spyOnScrollTo() {
+        scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+        return scrollToSpy;
+      }
       afterEach(() => {
-        vi.restoreAllMocks();
+        scrollToSpy?.mockRestore();
+        scrollToSpy = undefined;
       });
 
       it("re-issues scrollTo at the pending spread's offset and leaves currentPage alone", async () => {
-        const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+        const scrollToSpy = spyOnScrollTo();
         renderViewer(PAGE_COUNT);
         resizeViewport(800);
         // Settle on domIndex 0 for real, clearing the pending guard the
@@ -806,7 +816,7 @@ describe("PdfViewer", () => {
       });
 
       it("stops re-issuing scrollTo once the recovery cap is reached, without corrupting currentPage", async () => {
-        const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+        const scrollToSpy = spyOnScrollTo();
         renderViewer(PAGE_COUNT);
         resizeViewport(800);
         await scrollTo(0);
