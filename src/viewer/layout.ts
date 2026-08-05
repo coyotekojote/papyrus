@@ -39,19 +39,40 @@ export function spreadContentWidth(
 }
 
 /**
- * Widest spread in the document at its natural size (zoom 1), used to pick a
- * "fit" zoom that shows the whole spread without clipping (issue #68) — the
- * fit only has to satisfy the widest one for every spread to fit.
+ * The zoom above which at least one spread would no longer fit inside
+ * `availableWidth` — the tightest constraint across every spread, used to
+ * pick a "fit" zoom that shows every spread without clipping (issue #68).
+ *
+ * The gap between a spread's pages is fixed and does not scale with zoom
+ * (see `spreadContentWidth`), so this is *not* simply
+ * `availableWidth / widest natural spread`: each spread's own allowance is
+ * `(availableWidth - gap * (pages - 1)) / natural pages width`, and the fit
+ * must satisfy the *smallest* of those — a spread with fewer, wider pages
+ * can be the tighter constraint even when it is not the widest spread at
+ * zoom 1, because it has less gap to absorb the difference.
+ *
+ * Returns `null` when there is no spread to size against — an empty
+ * document, or every spread's pages measuring zero width — so the caller
+ * can fall back to a default instead of dividing by it.
  */
-export function maxSpreadContentWidth(
+export function fitZoomForSpreads(
   spreads: readonly Spread[],
   pageSizes: readonly PageSize[],
+  availableWidth: number,
   gap = PAGE_GAP,
-): number {
-  return spreads.reduce(
-    (max, spread) => Math.max(max, spreadContentWidth(spread, pageSizes, 1, gap)),
-    0,
-  );
+): number | null {
+  let tightest: number | null = null;
+  for (const spread of spreads) {
+    if (spread.length === 0) continue;
+    const pagesWidth = spread.reduce(
+      (total, page) => total + pageSizeAt(pageSizes, page).width,
+      0,
+    );
+    if (pagesWidth <= 0) continue;
+    const allowed = (availableWidth - gap * (spread.length - 1)) / pagesWidth;
+    tightest = tightest === null ? allowed : Math.min(tightest, allowed);
+  }
+  return tightest;
 }
 
 /**

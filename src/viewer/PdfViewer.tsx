@@ -57,7 +57,6 @@ import { useAnnotations } from "./use-annotations";
 import {
   PAGE_GAP,
   SPREAD_PADDING,
-  maxSpreadContentWidth,
   pageDisplaySize,
   pageSizeAt,
   spreadBoxWidth,
@@ -427,22 +426,24 @@ export function PdfViewer({
     [spreads, total, binding],
   );
 
-  // Widest spread at its natural size — what a `fit` zoom fits itself
-  // against (issue #68).
-  const maxNaturalSpreadWidth = useMemo(
-    () => maxSpreadContentWidth(domSpreads, pageSizes, PAGE_GAP),
-    [domSpreads, pageSizes],
-  );
-
   // The zoom actually applied to the pages: `fit` resolves to a concrete
   // number here, so layout, rendering and the toolbar's % display all deal in
-  // one effective zoom regardless of `zoomState`'s mode.
+  // one effective zoom regardless of `zoomState`'s mode. `fitZoom`'s spread
+  // walk only runs inside this ternary branch — a `manual` zoom never needs
+  // it, so it must not re-run every time `domSpreads`/`pageSizes` change
+  // while the reader is not even in fit mode.
   const zoom = useMemo(
     () =>
       zoomState.mode === "fit"
-        ? fitZoom(viewportWidth, maxNaturalSpreadWidth, SPREAD_PADDING)
+        ? fitZoom(
+            viewportWidth,
+            domSpreads,
+            pageSizes,
+            SPREAD_PADDING,
+            PAGE_GAP,
+          )
         : zoomState.value,
-    [zoomState, viewportWidth, maxNaturalSpreadWidth],
+    [zoomState, viewportWidth, domSpreads, pageSizes],
   );
 
   const spreadIndex = clampSpreadIndex(
@@ -996,7 +997,11 @@ export function PdfViewer({
       const distance = pointerDistance(points[0], points[1]);
       setZoomState({
         mode: "manual",
-        value: pinchZoomFromTouch(state.startZoom, state.startDistance, distance),
+        value: pinchZoomFromTouch(
+          state.startZoom,
+          state.startDistance,
+          distance,
+        ),
       });
     };
 

@@ -546,6 +546,21 @@ describe("PdfViewer", () => {
       // Back to fit: resolves to the same 52% the viewport calls for, not 100%.
       expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
     });
+
+    it("accounts for a two-page spread's fixed gap, not just its pages (issue #68 review)", () => {
+      renderViewer(PAGE_COUNT, [], { viewMode: "spread" });
+
+      // A 148px viewport leaves 100px available after SPREAD_PADDING (24 on
+      // each side). Every two-page spread here is 100 + 100 wide with the
+      // default 8px PAGE_GAP between its pages, so its own allowance is
+      // (100 - 8) / 200 = 46%. The old approach — fitting against the
+      // widest spread's *natural* width (100 + 100 + 8 = 208) instead of
+      // solving each spread's own (available - gap) / pages — would have
+      // landed on availableWidth / 208 ≈ 48% instead, letting the pages
+      // overflow past the gap it never subtracted.
+      resizeViewport(148);
+      expect(screen.getByRole("button", { name: "46%" })).toBeInTheDocument();
+    });
   });
 
   it("closes the document from the toolbar", async () => {

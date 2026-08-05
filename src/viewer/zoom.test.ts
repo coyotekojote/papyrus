@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { PageSize } from "../pdf";
+import { PAGE_GAP, SPREAD_PADDING } from "./layout";
+import type { Spread } from "./spreads";
 import {
   applyZoomCommand,
   clampZoom,
@@ -10,6 +13,11 @@ import {
   steppedZoom,
   zoomCommandForKey,
 } from "./zoom";
+
+/** A single spread whose one page is exactly `width` wide. */
+function singlePageSpreads(width: number): [Spread[], PageSize[]] {
+  return [[[1]], [{ width, height: 1 }]];
+}
 
 describe("clampZoom", () => {
   it("keeps a value inside the range", () => {
@@ -74,38 +82,69 @@ describe("pinchZoom", () => {
 
 describe("fitZoom", () => {
   it("falls back to the default before the viewport has been measured", () => {
-    expect(fitZoom(0, 800)).toBe(DEFAULT_ZOOM);
+    const [spreads, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(0, spreads, pageSizes)).toBe(DEFAULT_ZOOM);
   });
 
   it("falls back to the default when there is no spread to size against", () => {
-    expect(fitZoom(800, 0)).toBe(DEFAULT_ZOOM);
+    const [, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(800, [], pageSizes)).toBe(DEFAULT_ZOOM);
   });
 
   it("lands exactly on the default zoom when the spread just fits", () => {
     // padding defaults to SPREAD_PADDING (24 either side): a spread of 800
     // fits at 100% in a viewport of 800 + 2*24.
-    expect(fitZoom(848, 800)).toBe(DEFAULT_ZOOM);
+    const [spreads, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(848, spreads, pageSizes)).toBe(DEFAULT_ZOOM);
   });
 
   it("shrinks to fit a narrower viewport", () => {
-    expect(fitZoom(448, 800)).toBeCloseTo(0.5, 10);
+    const [spreads, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(448, spreads, pageSizes)).toBeCloseTo(0.5, 10);
   });
 
   it("clamps to MIN_ZOOM instead of shrinking past it", () => {
-    expect(fitZoom(100, 800)).toBe(MIN_ZOOM);
+    const [spreads, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(100, spreads, pageSizes)).toBe(MIN_ZOOM);
   });
 
   it("never magnifies past the default, however wide the viewport is", () => {
-    expect(fitZoom(4000, 800)).toBe(DEFAULT_ZOOM);
+    const [spreads, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(4000, spreads, pageSizes)).toBe(DEFAULT_ZOOM);
   });
 
   it("honours a custom padding", () => {
-    expect(fitZoom(500, 500, 0)).toBe(DEFAULT_ZOOM);
-    expect(fitZoom(250, 500, 0)).toBeCloseTo(0.5, 10);
+    const [spreads, pageSizes] = singlePageSpreads(500);
+    expect(fitZoom(500, spreads, pageSizes, 0)).toBe(DEFAULT_ZOOM);
+    expect(fitZoom(250, spreads, pageSizes, 0)).toBeCloseTo(0.5, 10);
   });
 
   it("falls back to the default for a non-finite viewport width", () => {
-    expect(fitZoom(Number.NaN, 800)).toBe(DEFAULT_ZOOM);
+    const [spreads, pageSizes] = singlePageSpreads(800);
+    expect(fitZoom(Number.NaN, spreads, pageSizes)).toBe(DEFAULT_ZOOM);
+  });
+
+  it("accounts for the fixed gap between a spread's pages, not just their own width (issue #68 review)", () => {
+    // Two pages, 100 + 150 wide, with the default PAGE_GAP between them, in
+    // a viewport too narrow to show them at 100%. Dividing availableWidth by
+    // (pagesWidth + gap) — the old, buggy approach — would let the real
+    // displayed width (pagesWidth * zoom + gap) overshoot availableWidth by
+    // up to gap * (1 - zoom), since the gap does not itself scale with zoom.
+    const spreads: Spread[] = [[1, 2]];
+    const pageSizes: PageSize[] = [
+      { width: 100, height: 1 },
+      { width: 150, height: 1 },
+    ];
+    const viewportWidth = 200 + 2 * SPREAD_PADDING;
+    const zoom = fitZoom(viewportWidth, spreads, pageSizes);
+    const availableWidth = viewportWidth - 2 * SPREAD_PADDING;
+    // The zoom this returns must not let the real content overflow: pages
+    // scaled by it, plus the untouched gap, stay within availableWidth.
+    expect(250 * zoom + PAGE_GAP).toBeLessThanOrEqual(availableWidth + 1e-9);
+    // The old formula (availableWidth / (pagesWidth + gap)) would have
+    // returned this larger, overflowing value instead.
+    const oldBuggyZoom = availableWidth / (250 + PAGE_GAP);
+    expect(zoom).toBeLessThan(oldBuggyZoom);
   });
 });
 

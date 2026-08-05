@@ -1,4 +1,6 @@
-import { SPREAD_PADDING } from "./layout";
+import type { PageSize } from "../pdf";
+import { fitZoomForSpreads, PAGE_GAP, SPREAD_PADDING } from "./layout";
+import type { Spread } from "./spreads";
 
 export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 6;
@@ -48,25 +50,27 @@ export function pinchZoom(zoom: number, deltaY: number): number {
 export type ZoomState = { mode: "fit" } | { mode: "manual"; value: number };
 
 /**
- * The zoom that shows the widest spread in full, given the current viewport.
- * Only ever shrinks to fit (issue #68) — a roomy window still shows pages at
+ * The zoom that shows every spread in full, given the current viewport. Only
+ * ever shrinks to fit (issue #68) — a roomy window still shows pages at
  * their natural 100%, it never magnifies a spread past `DEFAULT_ZOOM` just
  * because there is space to spare. Falls back to `DEFAULT_ZOOM` before the
- * viewport has been measured (`viewportWidth` is 0 on first render) or when
- * there is no spread yet to size against.
+ * viewport has been measured (`viewportWidth` is 0 on first render), when
+ * the viewport is too narrow to fit even the padding, or when there is no
+ * spread yet to size against — see `fitZoomForSpreads` for how the gap
+ * between a spread's pages (fixed, not scaled by zoom) is accounted for.
  */
 export function fitZoom(
   viewportWidth: number,
-  maxNaturalSpreadWidth: number,
+  spreads: readonly Spread[],
+  pageSizes: readonly PageSize[],
   padding = SPREAD_PADDING,
+  gap = PAGE_GAP,
 ): number {
-  if (viewportWidth <= 0 || maxNaturalSpreadWidth <= 0) return DEFAULT_ZOOM;
-  return clampZoom(
-    Math.min(
-      DEFAULT_ZOOM,
-      (viewportWidth - 2 * padding) / maxNaturalSpreadWidth,
-    ),
-  );
+  if (viewportWidth <= 0) return DEFAULT_ZOOM;
+  const availableWidth = viewportWidth - 2 * padding;
+  const tightest = fitZoomForSpreads(spreads, pageSizes, availableWidth, gap);
+  if (tightest === null) return DEFAULT_ZOOM;
+  return clampZoom(Math.min(DEFAULT_ZOOM, tightest));
 }
 
 export type ZoomCommand = "in" | "out" | "reset";
