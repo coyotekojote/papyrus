@@ -11,6 +11,7 @@
     "allow-greet",
     "allow-create-bookmark",
     "allow-resolve-bookmark",
+    "allow-register-pdf-path",
     "allow-load-annotations",
     "allow-save-annotations",
     "allow-load-notes",
