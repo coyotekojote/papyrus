@@ -90,16 +90,25 @@ function measureLine(
 
   doc.body.append(mirror);
   try {
-    // The mirror has no padding of its own, so `offsetTop` — measured from
-    // its padding edge — is already the distance from the start of the text,
-    // which is exactly what the textarea's `scrollTop` counts from.
-    const top = marker.offsetTop;
+    // How tall the marker's own inline box is — the glyph area, not the line
+    // box the `line-height` spaces out.
+    const inlineHeight = marker.offsetHeight;
     const lineHeight =
-      marker.offsetHeight ||
       Number.parseFloat(computed.lineHeight) ||
+      inlineHeight ||
       Number.parseFloat(computed.fontSize) * 1.2 ||
       0;
     if (lineHeight === 0) return null;
+    // `offsetTop` is the top of that inline box, which `line-height` centres
+    // inside the line box — so it sits half the leading below where the line
+    // actually starts. Without taking that back off, every jump lands a
+    // fraction of a line low, which at this file's 1.7 line-height is a
+    // visible half-line.
+    const halfLeading = Math.max(0, (lineHeight - inlineHeight) / 2);
+    // The mirror has no padding of its own, so what is left is the distance
+    // from the start of the text, which is exactly what `scrollTop` counts
+    // from.
+    const top = marker.offsetTop - halfLeading;
     return { top: Math.max(0, top), lineHeight };
   } finally {
     mirror.remove();

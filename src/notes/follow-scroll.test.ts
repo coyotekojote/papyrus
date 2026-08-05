@@ -112,6 +112,21 @@ describe("scrollOffsetIntoView", () => {
     expect(mirrorWidth).toBe("384px");
   });
 
+  it("lands on the line's top, not part way down it", () => {
+    // `line-height` spaces the line box out around the glyphs, so the marker's
+    // own box starts half that leading below where the line does. Counting
+    // from the marker alone would drop every jump by that much — half a line
+    // at the editor's own 1.7 line-height.
+    layout({ top: 300, height: 20 });
+    const textarea = editor("見出し\n本文");
+    textarea.style.lineHeight = "30px";
+
+    scrollOffsetIntoView(textarea, 4);
+
+    // 300 - (30 - 20) / 2 = 295 for the line's top, then a line of context.
+    expect(textarea.scrollTop).toBe(265);
+  });
+
   it("clamps to the top rather than scrolling to a negative offset", () => {
     layout({ top: 5, height: 20 });
     const textarea = editor("見出し");
