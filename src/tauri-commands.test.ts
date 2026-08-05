@@ -23,11 +23,23 @@ describe("Tauri commands are wired up end to end", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const tauri = (...parts: string[]) => join(here, "..", "src-tauri", ...parts);
 
-  /** Command names inside `generate_handler![...]`, without their module path. */
+  /**
+   * Command names inside `generate_handler![...]`, without their module path.
+   * Anchored to the `invoke_handler` call it is passed to, rather than to
+   * `generate_handler!` alone: the macro's name appearing anywhere else — a
+   * doc comment, a second handler set for another window — would otherwise be
+   * what got parsed, and the mismatch would surface as a confusing failure
+   * somewhere else entirely.
+   */
   function handlerCommands(): string[] {
     const source = readFileSync(tauri("src", "lib.rs"), "utf-8");
-    const block = /generate_handler!\[([^\]]*)\]/s.exec(source);
-    if (!block) throw new Error("lib.rs has no generate_handler![...] block");
+    const block =
+      /\.invoke_handler\(\s*tauri::generate_handler!\[(.*?)\]\s*\)/s.exec(
+        source,
+      );
+    if (!block) {
+      throw new Error("lib.rs has no invoke_handler(generate_handler![...])");
+    }
     return (
       block[1]
         .split(",")
@@ -38,10 +50,15 @@ describe("Tauri commands are wired up end to end", () => {
     );
   }
 
-  /** The `COMMANDS` array tauri-build generates permissions from. */
+  /**
+   * The `COMMANDS` array tauri-build generates permissions from. Read up to
+   * the `];` that closes it rather than to the first `]`, so a comment or
+   * string holding one inside the array does not cut the list short — which
+   * would quietly drop commands from the comparison instead of failing.
+   */
   function buildCommands(): string[] {
     const source = readFileSync(tauri("build.rs"), "utf-8");
-    const block = /const COMMANDS: &\[&str\] = &\[([^\]]*)\]/s.exec(source);
+    const block = /const COMMANDS: &\[&str\] = &\[(.*?)\];/s.exec(source);
     if (!block) throw new Error("build.rs has no COMMANDS array");
     return [...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
   }
