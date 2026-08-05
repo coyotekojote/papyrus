@@ -676,6 +676,74 @@ describe("PdfViewer", () => {
         expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
       });
     });
+
+    describe("handleScroll ignores drift while layout hasn't caught up with the DOM (issue #68 review)", () => {
+      /**
+       * Reports `scroller.scrollWidth` as `width` on the element instance
+       * (overriding jsdom's own accessor, which always reports 0 — real
+       * layout never happens there). Only an instance override is needed:
+       * each test renders its own viewer, so nothing leaks across tests.
+       */
+      function stubScrollWidth(width: number) {
+        Object.defineProperty(scroller(), "scrollWidth", {
+          configurable: true,
+          value: width,
+        });
+      }
+
+      /** Fires a `scroll` event at `left` and lets the rAF handler run. */
+      async function scrollTo(left: number) {
+        const element = scroller();
+        element.scrollLeft = left;
+        fireEvent.scroll(element);
+        await flushScroll();
+      }
+
+      it("ignores repeated drift events while scrollWidth disagrees with the laid-out width", async () => {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+
+        // Settle on domIndex 0 for real (default `scrollWidth`, 0 in jsdom,
+        // leaves the invariant check below inactive) so the pending guard
+        // from the initial resize is cleared before the drift below —
+        // otherwise that guard alone, not the invariant this test is about,
+        // would already block it.
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // 8 single-page spreads, each exactly 800px (the viewport width)
+        // wide: the DOM's real scroll width, once `layout` has caught up,
+        // would be 8 * 800 = 6400. Reporting a width 100px off that — as
+        // `.scroller` would mid-resize, before `viewportWidth` has been
+        // measured again — must keep `layout` from being trusted, no matter
+        // how many drift events arrive while it disagrees.
+        stubScrollWidth(6300);
+
+        // Three separate `scroll` events (separate rAF ticks), all landing
+        // on domIndex 1's slot — standing in for WebKit's re-snap drifting
+        // across several events rather than settling on the first one, which
+        // is exactly what let it slip past a pending-only guard.
+        await scrollTo(800);
+        await scrollTo(800);
+        await scrollTo(800);
+
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("resumes updating currentPage once scrollWidth agrees with layout again", async () => {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Matches the laid-out extent (8 * 800) exactly: layout has caught
+        // up, so this is indistinguishable from a real, settled browser.
+        stubScrollWidth(6400);
+        await scrollTo(800);
+
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+    });
   });
 
   it("closes the document from the toolbar", async () => {

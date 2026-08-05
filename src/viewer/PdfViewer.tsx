@@ -81,6 +81,7 @@ import {
 } from "./spreads";
 import {
   computeLayout,
+  layoutExtent,
   nearestItemIndex,
   prefetchRange,
   rangeIncludes,
@@ -808,6 +809,27 @@ export function PdfViewer({
       // The popup is anchored to viewport coordinates; scrolling moves the
       // page out from under it.
       setPopup(null);
+
+      // `pendingDomIndexRef` alone only survives a single stray event (issue
+      // #68 review): a panel's resize commit changes `.scroller`'s width
+      // immediately, but WebKit's own scroll-snap re-snap reacting to it can
+      // drift across *several* `scroll` events before `viewportWidth`'s
+      // `ResizeObserver` callback — and thus `layout`, computed from it —
+      // catches up. The first of those events can land close enough to the
+      // spread the reader was already on for `nearest === pending` to hold,
+      // clearing the guard early and leaving the later drift events free to
+      // corrupt `currentPage`. This checks the actual invariant instead of
+      // counting events: `layout`'s total width only matches the DOM's own
+      // `scrollWidth` once `viewportWidth` has caught up with the real
+      // layout, so a mismatch here means `left` cannot yet be trusted
+      // against `layout`, no matter how many events have already fired.
+      // `scrollWidth` is always 0 in jsdom (it never lays boxes out for
+      // real), so this only ever engages in a real browser — tests stand it
+      // up by hand instead.
+      if (scroller.scrollWidth > 0) {
+        const expectedWidth = layoutExtent(layout);
+        if (Math.abs(scroller.scrollWidth - expectedWidth) > 1) return;
+      }
 
       const nearest = nearestItemIndex(layout, left, viewportWidth);
       if (pendingDomIndexRef.current !== null) {
