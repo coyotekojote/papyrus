@@ -542,7 +542,9 @@ describe("PdfViewer", () => {
       await user.click(screen.getByRole("button", { name: "拡大" }));
       expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
 
-      await user.keyboard("{Control>}0{/Control}");
+      // Meta (not Control): the Ctrl variant is already covered by the
+      // pre-existing shortcut test above; this exercises the metaKey path.
+      await user.keyboard("{Meta>}0{/Meta}");
       // Back to fit: resolves to the same 52% the viewport calls for, not 100%.
       expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
     });
@@ -764,6 +766,12 @@ describe("PdfViewer", () => {
         await flushScroll();
       }
 
+      // A failed assertion would skip a per-test `mockRestore()`, leaking
+      // the `Element.prototype.scrollTo` spy into later tests.
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
       it("re-issues scrollTo at the pending spread's offset and leaves currentPage alone", async () => {
         const scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
         renderViewer(PAGE_COUNT);
@@ -795,8 +803,6 @@ describe("PdfViewer", () => {
           left: 800,
           behavior: "auto",
         });
-
-        scrollToSpy.mockRestore();
       });
 
       it("stops re-issuing scrollTo once the recovery cap is reached, without corrupting currentPage", async () => {
@@ -823,8 +829,6 @@ describe("PdfViewer", () => {
         // Giving up on re-issuing scrollTo must not also give up on the
         // pending guard: currentPage still must not have been corrupted.
         expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
-
-        scrollToSpy.mockRestore();
       });
     });
   });
