@@ -54,10 +54,11 @@ export type ZoomState = { mode: "fit" } | { mode: "manual"; value: number };
  * ever shrinks to fit (issue #68) — a roomy window still shows pages at
  * their natural 100%, it never magnifies a spread past `DEFAULT_ZOOM` just
  * because there is space to spare. Falls back to `DEFAULT_ZOOM` before the
- * viewport has been measured (`viewportWidth` is 0 on first render), when
- * the viewport is too narrow to fit even the padding, or when there is no
- * spread yet to size against — see `fitZoomForSpreads` for how the gap
- * between a spread's pages (fixed, not scaled by zoom) is accounted for.
+ * viewport has been measured (`viewportWidth` is 0 on first render) or when
+ * there is no spread yet to size against; a viewport too narrow to fit even
+ * the padding just bottoms out at `MIN_ZOOM` via the clamp — see
+ * `fitZoomForSpreads` for how the gap between a spread's pages (fixed, not
+ * scaled by zoom) is accounted for.
  */
 export function fitZoom(
   viewportWidth: number,
