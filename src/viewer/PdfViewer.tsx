@@ -899,10 +899,19 @@ export function PdfViewer({
         event.preventDefault();
         // A pinch is a deliberate zoom choice (issue #68): it goes manual
         // from the effective zoom, same as the toolbar and keyboard.
-        setZoomState({
-          mode: "manual",
-          value: pinchZoom(zoomRef.current, event.deltaY),
-        });
+        //
+        // `zoomRef` is normally only written after commit (see its
+        // declaration above), but several wheel events can arrive in the
+        // same frame before React re-renders and that effect runs. Reading
+        // `zoomRef.current` alone would base every one of them on the same
+        // stale value and only the last write would stick, losing deltas —
+        // so it is advanced synchronously here, matching the accumulation a
+        // functional `setState(current => ...)` update used to give for
+        // free. The post-commit effect below will write back this same
+        // value, so it stays consistent.
+        const value = pinchZoom(zoomRef.current, event.deltaY);
+        zoomRef.current = value;
+        setZoomState({ mode: "manual", value });
         return;
       }
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {

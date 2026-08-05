@@ -23,6 +23,7 @@ import { translate } from "../translation/translate";
 import { OVERSCAN_SETTLE_MS, PdfViewer } from "./PdfViewer";
 import { RenderQueue } from "./render-queue";
 import type { Binding, ViewMode } from "./spreads";
+import { pinchZoom } from "./zoom";
 
 vi.mock("../files/sidecar", async (importActual) => {
   const actual = await importActual<typeof import("../files/sidecar")>();
@@ -1000,6 +1001,27 @@ describe("PdfViewer", () => {
 
       expect(scrollBy).not.toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: "100%" })).toBeNull();
+    });
+
+    it("accumulates deltas from wheel events landing in the same commit", () => {
+      renderViewer();
+
+      // Two pinch ticks dispatched inside one `act()`, so React has no
+      // chance to commit (and refresh `zoomRef`) between them — this is
+      // what several wheel events arriving within a single frame look like.
+      // Each must still compound onto the other's result, the same
+      // guarantee the old `setZoom(current => ...)` functional update gave;
+      // reading a `zoomRef` that was only refreshed once, after both, would
+      // silently drop the first delta.
+      act(() => {
+        fireEvent.wheel(scroller(), { deltaY: -50, ctrlKey: true });
+        fireEvent.wheel(scroller(), { deltaY: -50, ctrlKey: true });
+      });
+
+      const expected = Math.round(pinchZoom(pinchZoom(1, -50), -50) * 100);
+      expect(
+        screen.getByRole("button", { name: `${expected}%` }),
+      ).toBeInTheDocument();
     });
   });
 
