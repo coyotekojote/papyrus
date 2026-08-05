@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FALLBACK_PAGE_SIZE, type PageSize } from "../pdf";
 import {
+  maxSpreadContentWidth,
   pageDisplaySize,
   pageSizeAt,
   spreadBoxWidth,
@@ -64,6 +65,31 @@ describe("spreadContentWidth", () => {
 
   it("scales the pages but not the gap", () => {
     expect(spreadContentWidth([2, 3], sizes, 2, 8)).toBe(200 + 300 + 8);
+  });
+});
+
+describe("maxSpreadContentWidth", () => {
+  it("is zero when there are no spreads", () => {
+    expect(maxSpreadContentWidth([], sizes)).toBe(0);
+  });
+
+  it("is the natural width of the single spread", () => {
+    expect(maxSpreadContentWidth([[1]], sizes, 8)).toBe(100);
+    expect(maxSpreadContentWidth([[2, 3]], sizes, 8)).toBe(100 + 150 + 8);
+  });
+
+  it("picks the widest of several spreads, not the first or last", () => {
+    expect(maxSpreadContentWidth([[1], [2, 3], [1]], sizes, 8)).toBe(
+      100 + 150 + 8,
+    );
+  });
+
+  it("ignores zoom entirely: it is always measured at the natural size", () => {
+    // Passing a zoom-scaled `spreadContentWidth` result in would double-count
+    // the scaling; `maxSpreadContentWidth` always reduces at zoom 1.
+    expect(maxSpreadContentWidth([[2, 3]], sizes, 8)).toBe(
+      spreadContentWidth([2, 3], sizes, 1, 8),
+    );
   });
 });
 

@@ -192,6 +192,39 @@ function touch(
   return event;
 }
 
+/**
+ * A `ResizeObserver` stand-in tests can fire by hand. jsdom's layout is
+ * always zero-sized (`src/test/setup.ts`'s stub reports nothing observable),
+ * so this is the only way to simulate the scroller actually changing width —
+ * the window resizing, or the notes panel opening and narrowing it (issue
+ * #68). Swapped in only for the tests that need it (`vi.stubGlobal`), since
+ * every other test relies on the inert default from the setup file.
+ */
+class ControllableResizeObserver {
+  static instances: ControllableResizeObserver[] = [];
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ControllableResizeObserver.instances.push(this);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  fire(width: number) {
+    this.callback(
+      [{ contentRect: { width } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
+
+/** Reports a new scroller width through the most recently registered observer. */
+function resizeViewport(width: number) {
+  const observer = ControllableResizeObserver.instances.at(-1);
+  if (!observer) throw new Error("no ResizeObserver was registered");
+  act(() => observer.fire(width));
+}
+
 /** Lets the rAF-throttled scroll handler run. */
 async function flushScroll() {
   await act(async () => {
@@ -449,6 +482,69 @@ describe("PdfViewer", () => {
     expect(vi.mocked(doc.renderPage).mock.calls.length).toBeGreaterThan(before);
     const lastCall = vi.mocked(doc.renderPage).mock.calls.at(-1);
     expect(lastCall?.[1].scale).toBe(1.25);
+  });
+
+  describe("fit zoom (issue #68)", () => {
+    beforeEach(() => {
+      ControllableResizeObserver.instances = [];
+      vi.stubGlobal("ResizeObserver", ControllableResizeObserver);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shrinks to fit a viewport narrower than the spread", () => {
+      renderViewer();
+
+      // Single-page spread, natural width 100 (fakeDoc's page size); with
+      // SPREAD_PADDING (24) on each side, a 100px viewport only has room for
+      // (100 - 48) / 100 = 52% of it.
+      resizeViewport(100);
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+    });
+
+    it("caps at 100% once the viewport has room to spare", () => {
+      renderViewer();
+
+      resizeViewport(200);
+      expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+    });
+
+    it("re-fits automatically as the viewport changes, e.g. opening notes", () => {
+      renderViewer();
+
+      resizeViewport(200);
+      expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+
+      resizeViewport(100);
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+    });
+
+    it("switching to manual zoom stops tracking the viewport", async () => {
+      const { user } = renderViewer();
+      resizeViewport(100);
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "拡大" }));
+      // steppedZoom moves from the effective 52% to the next stop above it.
+      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+
+      resizeViewport(1000);
+      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+    });
+
+    it("Cmd+0 hands control back to fit, not a fixed 100%", async () => {
+      const { user } = renderViewer();
+      resizeViewport(100);
+
+      await user.click(screen.getByRole("button", { name: "拡大" }));
+      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+
+      await user.keyboard("{Control>}0{/Control}");
+      // Back to fit: resolves to the same 52% the viewport calls for, not 100%.
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+    });
   });
 
   it("closes the document from the toolbar", async () => {

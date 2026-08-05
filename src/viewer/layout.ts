@@ -39,6 +39,22 @@ export function spreadContentWidth(
 }
 
 /**
+ * Widest spread in the document at its natural size (zoom 1), used to pick a
+ * "fit" zoom that shows the whole spread without clipping (issue #68) — the
+ * fit only has to satisfy the widest one for every spread to fit.
+ */
+export function maxSpreadContentWidth(
+  spreads: readonly Spread[],
+  pageSizes: readonly PageSize[],
+  gap = PAGE_GAP,
+): number {
+  return spreads.reduce(
+    (max, spread) => Math.max(max, spreadContentWidth(spread, pageSizes, 1, gap)),
+    0,
+  );
+}
+
+/**
  * Width of a spread's scroll-snap box. A spread is always at least as wide as
  * the viewport so exactly one spread fills the screen and snapping lands on it.
  */

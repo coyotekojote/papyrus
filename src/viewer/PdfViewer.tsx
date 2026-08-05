@@ -57,6 +57,7 @@ import { useAnnotations } from "./use-annotations";
 import {
   PAGE_GAP,
   SPREAD_PADDING,
+  maxSpreadContentWidth,
   pageDisplaySize,
   pageSizeAt,
   spreadBoxWidth,
@@ -88,11 +89,12 @@ import {
   type ScrollDirection,
 } from "./virtualization";
 import {
-  DEFAULT_ZOOM,
   applyZoomCommand,
+  fitZoom,
   pinchZoom,
   zoomCommandForKey,
   type ZoomCommand,
+  type ZoomState,
 } from "./zoom";
 
 /** Spreads rendered on each side of the visible one. */
@@ -271,7 +273,9 @@ export function PdfViewer({
     defaultViewModeForScreen(defaultViewMode, isCompact),
   );
   const [binding, setBinding] = useState<Binding>(defaultBinding);
-  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+  // Defaults to `fit` (issue #68): a manual 100% would clip a spread against
+  // the notes panel or a narrowed window, since neither used to affect zoom.
+  const [zoomState, setZoomState] = useState<ZoomState>({ mode: "fit" });
   // Clamped once, from the initial props: `doc` never changes for the
   // lifetime of this component (the caller remounts via `key={path}` for a
   // new one), so there is nothing to re-clamp against later.
@@ -417,6 +421,30 @@ export function PdfViewer({
   );
   const total = spreads.length;
 
+  /** Spreads in scroll order: reversed for a right-bound book. */
+  const domSpreads = useMemo(
+    () => spreads.map((_, index) => spreads[toDomIndex(index, total, binding)]),
+    [spreads, total, binding],
+  );
+
+  // Widest spread at its natural size — what a `fit` zoom fits itself
+  // against (issue #68).
+  const maxNaturalSpreadWidth = useMemo(
+    () => maxSpreadContentWidth(domSpreads, pageSizes, PAGE_GAP),
+    [domSpreads, pageSizes],
+  );
+
+  // The zoom actually applied to the pages: `fit` resolves to a concrete
+  // number here, so layout, rendering and the toolbar's % display all deal in
+  // one effective zoom regardless of `zoomState`'s mode.
+  const zoom = useMemo(
+    () =>
+      zoomState.mode === "fit"
+        ? fitZoom(viewportWidth, maxNaturalSpreadWidth, SPREAD_PADDING)
+        : zoomState.value,
+    [zoomState, viewportWidth, maxNaturalSpreadWidth],
+  );
+
   const spreadIndex = clampSpreadIndex(
     Math.max(0, spreadIndexOfPage(spreads, currentPage)),
     total,
@@ -441,12 +469,6 @@ export function PdfViewer({
     zoomRef.current = zoom;
     clipModeRef.current = clipMode;
   });
-
-  /** Spreads in scroll order: reversed for a right-bound book. */
-  const domSpreads = useMemo(
-    () => spreads.map((_, index) => spreads[toDomIndex(index, total, binding)]),
-    [spreads, total, binding],
-  );
 
   const layout = useMemo(
     () =>
@@ -814,7 +836,11 @@ export function PdfViewer({
   }, [notesOutlineFollow, outline, currentPage]);
 
   const runZoomCommand = useCallback((command: ZoomCommand) => {
-    setZoom((current) => applyZoomCommand(current, command));
+    // Always steps from the *effective* zoom (`zoomRef`), not the previous
+    // `zoomState` — under `fit` that state holds no number at all, and even
+    // under `manual` it can lag behind a `fit` that just changed underneath
+    // it a moment ago.
+    setZoomState(applyZoomCommand(zoomRef.current, command));
   }, []);
 
   // Keyboard: arrows follow the binding direction, Cmd/Ctrl +/-/0 zoom.
@@ -871,7 +897,12 @@ export function PdfViewer({
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
-        setZoom((current) => pinchZoom(current, event.deltaY));
+        // A pinch is a deliberate zoom choice (issue #68): it goes manual
+        // from the effective zoom, same as the toolbar and keyboard.
+        setZoomState({
+          mode: "manual",
+          value: pinchZoom(zoomRef.current, event.deltaY),
+        });
         return;
       }
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
@@ -954,9 +985,10 @@ export function PdfViewer({
       const points = pinchPoints(state);
       if (!points) return;
       const distance = pointerDistance(points[0], points[1]);
-      setZoom(
-        pinchZoomFromTouch(state.startZoom, state.startDistance, distance),
-      );
+      setZoomState({
+        mode: "manual",
+        value: pinchZoomFromTouch(state.startZoom, state.startDistance, distance),
+      });
     };
 
     /**
