@@ -2,6 +2,7 @@ const COMMANDS: &[&str] = &[
     "greet",
     "create_bookmark",
     "resolve_bookmark",
+    "register_pdf_path",
     "load_annotations",
     "save_annotations",
     "load_notes",
