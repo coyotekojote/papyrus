@@ -561,6 +561,121 @@ describe("PdfViewer", () => {
       resizeViewport(148);
       expect(screen.getByRole("button", { name: "46%" })).toBeInTheDocument();
     });
+
+    describe("currentPage survives a panel's resize commit (issue #68 review)", () => {
+      // Every spread here is a single page (default view mode), and each
+      // spread box is exactly as wide as the viewport whenever the viewport
+      // is wide enough to show a page at 100% (`spreadBoxWidth`) — true for
+      // every width used below — so domIndex `i`'s slot always sits at
+      // `i * boxWidth` and is `boxWidth` wide. That makes the scroll
+      // positions below exact, not approximate.
+
+      /**
+       * Fires a `scroll` event landing exactly on domIndex `index`'s slot at
+       * the given box width, and waits for the rAF-throttled handler.
+       */
+      async function settleAt(index: number, boxWidth: number) {
+        const element = scroller();
+        element.scrollLeft = index * boxWidth;
+        fireEvent.scroll(element);
+        await flushScroll();
+      }
+
+      /**
+       * Settles the reader on domIndex 2 (page 3 of `PAGE_COUNT`) at an
+       * 800px viewport and clears any pending programmatic scroll, so the
+       * corrupting scroll event fired later in each test is unambiguously
+       * the only thing that could move `currentPage`. `goToSpread`'s own
+       * smooth-scroll target never actually moves `scrollLeft` in jsdom;
+       * `settleAt` reports it arrived by hand instead.
+       */
+      async function settleOnThirdPage() {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        await user.keyboard("{ArrowRight}");
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        await settleAt(2, 800);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      }
+
+      /**
+       * Fires a `scroll` event at the slot for domIndex 3, using the layout
+       * and viewport width still in effect *before* a panel's real resize
+       * has been measured — standing in for the browser's own scroll-snap
+       * reaction to `.scroller` narrowing the instant the panel's DOM
+       * mutation commits, which reaches `handleScroll` before `viewportWidth`
+       * has caught up with the new width. `boxWidth` must match whatever
+       * width is currently in effect for this to land on a spread other than
+       * the one the reader is actually on.
+       */
+      function fireMisalignedResnapScroll(boxWidth: number) {
+        const element = scroller();
+        element.scrollLeft = 3 * boxWidth;
+        fireEvent.scroll(element);
+      }
+
+      it("is corrupted by a stray re-snap scroll when nothing guards the resize commit (control)", async () => {
+        // This reproduces the bug on a sequence with nothing at all opening
+        // or closing a panel, to confirm the scenario below actually
+        // exercises the regression: with no pending target set,
+        // `handleScroll` has nothing to reject the stray event with, and
+        // takes it as the truth.
+        await settleOnThirdPage();
+
+        fireMisalignedResnapScroll(800);
+        await flushScroll();
+
+        expect(screen.getByText(`4 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("stays on the same page when the notes panel opens, before the resize is measured", async () => {
+        await settleOnThirdPage();
+
+        // Opening the panel is what the fix must guard: its own commit
+        // stamps `pendingDomIndexRef` synchronously (a layout effect), before
+        // this hand-fired stand-in for the browser's re-snap event can be
+        // observed.
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+
+        fireMisalignedResnapScroll(800);
+        await flushScroll();
+
+        // Unlike the control test above, the guard set when the panel opened
+        // must have rejected this scroll: still page 3, not 4.
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // The real resize then lands (e.g. the notes panel's width applying,
+        // reported through the ResizeObserver) and must settle cleanly on
+        // the original page rather than leaving anything stuck.
+        resizeViewport(700);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("stays on the same page when the notes panel closes, before the resize is measured", async () => {
+        await settleOnThirdPage();
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        resizeViewport(700);
+        // Settle for real at the opened width, so the guard the close click
+        // exercises below is its own — not leftover from the open above.
+        await settleAt(2, 700);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Closing goes through the same guarded commit as opening did.
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+
+        fireMisalignedResnapScroll(700);
+        await flushScroll();
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        resizeViewport(800);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+    });
   });
 
   it("closes the document from the toolbar", async () => {

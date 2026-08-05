@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -713,10 +714,25 @@ export function PdfViewer({
     [binding, layout, spreads, total, viewportWidth],
   );
 
-  // Keep the current spread on screen when the layout changes (zoom, view mode,
-  // binding, window resize). Deliberately not triggered by `spreadIndex`, which
-  // would fight the user's own scrolling.
-  useEffect(() => {
+  // Keep the current spread on screen when the layout changes (zoom, view
+  // mode, binding, window resize). Deliberately not triggered by
+  // `spreadIndex`, which would fight the user's own scrolling.
+  //
+  // Must be a *layout* effect, not a passive one (issue #68 review): since
+  // `fit` zoom ties the box widths in `layout` to `viewportWidth`, a resize
+  // (the notes panel opening, the window narrowing) changes every spread's
+  // scroll-snap position. `.scroller` uses `scroll-snap-type: x mandatory`,
+  // so the browser re-snaps on its own the moment the resize lands and fires
+  // a `scroll` event for it — synchronously reacting to the same commit that
+  // changed the box widths. A passive effect runs after paint, i.e. after
+  // that re-snap has already been dispatched; `handleScroll` would see the
+  // stale `layout`/new `scrollLeft` pairing, resolve the wrong nearest
+  // spread, and stamp `currentPage` with it before this effect ever got a
+  // chance to set `pendingDomIndexRef` and guard against exactly that. A
+  // layout effect runs before the browser paints (and thus before that
+  // re-snap can be observed), so the guard is already up by the time it
+  // matters.
+  useLayoutEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller || total === 0) return;
     const domIndex = toDomIndex(spreadIndexRef.current, total, binding);
@@ -726,6 +742,31 @@ export function PdfViewer({
       behavior: "auto",
     });
   }, [layout, viewportWidth, binding, total]);
+
+  /**
+   * Closes the window between a panel's mount/unmount commit (which resizes
+   * `.scroller`, and thus its scroll-snap positions, immediately) and the
+   * `viewportWidth`/`layout` state catching up with it (only after the
+   * `ResizeObserver` callback runs, on a later commit) — issue #68 review.
+   * The re-snap the browser performs when the panel's commit lands can still
+   * fire a `scroll` event inside that window, and with no pending target set
+   * yet, `handleScroll` would read it against the *old* `layout` and corrupt
+   * `currentPage` before the layout effect above ever gets to react to the
+   * new width. Stamping `pendingDomIndexRef` here — without scrolling, since
+   * `layout` is still stale — freezes `handleScroll` against that stray
+   * event; the layout effect above then lands on the right spread once the
+   * real resize is measured, and clears the pending flag itself. A genuine
+   * scroll or drag from the reader still overrides this via the existing
+   * `cancelPendingScroll` on pointer-down/wheel, so it cannot get stuck.
+   */
+  useLayoutEffect(() => {
+    if (total === 0) return;
+    pendingDomIndexRef.current = toDomIndex(
+      spreadIndexRef.current,
+      total,
+      binding,
+    );
+  }, [notesOpen, highlightsOpen, sidebarOpen, total, binding]);
 
   /**
    * Abandons an in-flight programmatic scroll. Without this, interrupting a
