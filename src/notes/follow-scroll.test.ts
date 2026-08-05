@@ -21,7 +21,7 @@ function stub(
   Object.defineProperty(prototype, property, { configurable: true, get });
   patched.push(() => {
     if (original) Object.defineProperty(prototype, property, original);
-    else delete (prototype as Record<string, unknown>)[property];
+    else Reflect.deleteProperty(prototype, property);
   });
 }
 
@@ -56,12 +56,12 @@ const widthOfLastMirror = () => lastMirrorWidth;
 
 function watchMirror() {
   const original = document.body.append.bind(document.body);
-  const spy = ((...nodes: (Node | string)[]) => {
+  const spy: typeof document.body.append = (...nodes) => {
     for (const node of nodes) {
       if (node instanceof HTMLDivElement) lastMirrorWidth = node.style.width;
     }
-    return original(...nodes);
-  }) as typeof document.body.append;
+    original(...nodes);
+  };
   document.body.append = spy;
   patched.push(() => {
     document.body.append = original;
