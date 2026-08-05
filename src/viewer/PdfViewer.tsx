@@ -81,7 +81,6 @@ import {
 } from "./spreads";
 import {
   computeLayout,
-  layoutExtent,
   nearestItemIndex,
   prefetchRange,
   rangeIncludes,
@@ -811,24 +810,30 @@ export function PdfViewer({
       setPopup(null);
 
       // `pendingDomIndexRef` alone only survives a single stray event (issue
-      // #68 review): a panel's resize commit changes `.scroller`'s width
-      // immediately, but WebKit's own scroll-snap re-snap reacting to it can
-      // drift across *several* `scroll` events before `viewportWidth`'s
-      // `ResizeObserver` callback — and thus `layout`, computed from it —
-      // catches up. The first of those events can land close enough to the
-      // spread the reader was already on for `nearest === pending` to hold,
-      // clearing the guard early and leaving the later drift events free to
-      // corrupt `currentPage`. This checks the actual invariant instead of
-      // counting events: `layout`'s total width only matches the DOM's own
-      // `scrollWidth` once `viewportWidth` has caught up with the real
-      // layout, so a mismatch here means `left` cannot yet be trusted
-      // against `layout`, no matter how many events have already fired.
-      // `scrollWidth` is always 0 in jsdom (it never lays boxes out for
-      // real), so this only ever engages in a real browser — tests stand it
-      // up by hand instead.
-      if (scroller.scrollWidth > 0) {
-        const expectedWidth = layoutExtent(layout);
-        if (Math.abs(scroller.scrollWidth - expectedWidth) > 1) return;
+      // #68 review): a panel's resize commit changes `.scroller`'s *client*
+      // width immediately, but WebKit's own scroll-snap re-snap reacting to
+      // it (each spread box uses `scroll-snap-align: center`, so the snap
+      // position is derived straight from the client width) can drift across
+      // *several* `scroll` events before `viewportWidth` state — set from a
+      // `ResizeObserver` callback — catches up with that real width. The
+      // first of those events can land close enough to the spread the reader
+      // was already on for `nearest === pending` to hold, clearing the guard
+      // early and leaving the later drift events free to corrupt
+      // `currentPage`. This checks the actual invariant instead of counting
+      // events: `nearestItemIndex` below also takes `viewportWidth`, so as
+      // long as it disagrees with the real client width, its result cannot
+      // be trusted, no matter how many events have already fired. (A
+      // `scroller.scrollWidth`-vs-`layoutExtent(layout)` check was tried
+      // first, but every spread box's DOM width is itself painted straight
+      // from `layout` state — the same source `layoutExtent` reads — so the
+      // two only ever disagree from within-render rounding, never across the
+      // transition this guards against; a panel's resize changes the
+      // scroller's *client* width, not its content width, so that pairing
+      // never actually drifts apart.) `clientWidth` is always 0 in jsdom (it
+      // never lays boxes out for real), so this only ever engages in a real
+      // browser — tests stand it up by hand instead.
+      if (scroller.clientWidth > 0) {
+        if (Math.abs(scroller.clientWidth - viewportWidth) > 1) return;
       }
 
       const nearest = nearestItemIndex(layout, left, viewportWidth);
