@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Clip } from "../files/sidecar";
 import { detectDictationPlatform, dictationHint } from "./dictation";
+import { scrollOffsetIntoView } from "./follow-scroll";
 import { MarkdownView } from "./MarkdownView";
 import { findHeadingOffset } from "./outline-headings";
 import { useClipImages } from "./use-clip-images";
@@ -144,13 +145,7 @@ export function NotesPanel({
     appliedFollowHeadingRef.current = followHeading;
 
     textarea.setSelectionRange(offset, offset);
-    // Best-effort scroll: no line-wrap-aware layout is available here, so
-    // the position is estimated from the line count and the box's own
-    // average line height rather than measured precisely.
-    const totalLines = content.split("\n").length;
-    const lineIndex = content.slice(0, offset).split("\n").length - 1;
-    const lineHeight = textarea.scrollHeight / totalLines;
-    textarea.scrollTop = Math.max(0, lineIndex * lineHeight - lineHeight);
+    scrollOffsetIntoView(textarea, offset);
   }, [followHeading, mode, content, editorFocused]);
 
   return (
