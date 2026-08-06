@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -74,7 +75,6 @@ import {
   stepForArrowKey,
   toDomIndex,
   visualPageOrder,
-  wheelScrollDelta,
   type Binding,
   type ViewMode,
 } from "./spreads";
@@ -88,12 +88,46 @@ import {
   type ScrollDirection,
 } from "./virtualization";
 import {
-  DEFAULT_ZOOM,
   applyZoomCommand,
+  fitZoom,
   pinchZoom,
   zoomCommandForKey,
   type ZoomCommand,
+  type ZoomState,
 } from "./zoom";
+
+/**
+ * Cap on how many times `handleScroll` will re-issue `scrollTo` to fight
+ * back against the engine re-snapping over it (issue #68 review, see the
+ * comment where this is used) before giving up. Real telemetry shows this
+ * settling in a single re-issue; the cap only exists so a browser that kept
+ * fighting back indefinitely could not turn this into a busy loop.
+ */
+const MAX_RESNAP_RECOVERY_ATTEMPTS = 8;
+
+/**
+ * Accumulated vertical wheel delta that turns one page (issue #68 / #71).
+ * Fit zoom makes every spread box exactly as wide as `.scroller`'s
+ * viewport, so `scroll-snap-type: x mandatory` (with `snap-stop: always`)
+ * leaves no free range *inside* a box for a raw pixel `scrollBy` to move
+ * through — the engine snaps straight back on every single wheel event,
+ * which is what made wheel/trackpad paging go dead (and, at a fast fling,
+ * made the view flash black turning several spread widths in one jump —
+ * issue #71). Turning by whole spreads instead of pixels sidesteps the
+ * conflict by construction. 120 matches a classic mouse wheel's one detent
+ * (`deltaY` of ±120) — one notch, one page; a trackpad's short flick crosses
+ * it in one or two events, and a strong fling accumulates past it several
+ * times over, so a hard swipe still turns multiple pages.
+ */
+const TURN_THRESHOLD = 120;
+
+/**
+ * A vertical wheel gesture idle for longer than this (issue #68 / #71) is
+ * treated as a new one: its accumulated delta starts over, and so does the
+ * running target spread it was walking towards. Keeps a stray, long-delayed
+ * wheel tick from continuing a page-turn the reader had already stopped.
+ */
+const TURN_RESET_MS = 300;
 
 /** Spreads rendered on each side of the visible one. */
 const OVERSCAN = 1;
@@ -271,7 +305,9 @@ export function PdfViewer({
     defaultViewModeForScreen(defaultViewMode, isCompact),
   );
   const [binding, setBinding] = useState<Binding>(defaultBinding);
-  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
+  // Defaults to `fit` (issue #68): a manual 100% would clip a spread against
+  // the notes panel or a narrowed window, since neither used to affect zoom.
+  const [zoomState, setZoomState] = useState<ZoomState>({ mode: "fit" });
   // Clamped once, from the initial props: `doc` never changes for the
   // lifetime of this component (the caller remounts via `key={path}` for a
   // new one), so there is nothing to re-clamp against later.
@@ -376,6 +412,20 @@ export function PdfViewer({
    * that gesture for something else.
    */
   const pinchOccurredRef = useRef(false);
+  /**
+   * Running state for turning pages on a vertical wheel/trackpad gesture
+   * (issue #68 / #71; see `TURN_THRESHOLD`). `targetIndex` is the reader's
+   * own running count of the spread a run of turns is walking towards —
+   * `spreadIndexRef` only updates after commit, too slow for several turns
+   * fired within one frame — seeded from `spreadIndexRef` whenever the
+   * accumulation resets (a direction flip, or `TURN_RESET_MS` of silence).
+   */
+  const wheelTurnRef = useRef({
+    accum: 0,
+    direction: 0 as -1 | 0 | 1,
+    lastEventAt: 0,
+    targetIndex: 0,
+  });
   /** Aborts an in-flight region render when the reader leaves the document. */
   const clipAbortRef = useRef<AbortController | null>(null);
   /** The latest `createClip`, for the same reason as `dragRef`. */
@@ -405,6 +455,26 @@ export function PdfViewer({
 
   /** DOM index we scrolled to on purpose; scroll events ignore it until reached. */
   const pendingDomIndexRef = useRef<number | null>(null);
+  /**
+   * How many times `handleScroll` has re-issued `scrollTo` while chasing the
+   * current `pendingDomIndexRef` (issue #68 review). Reset alongside every
+   * place that sets a new pending target, so each target gets its own fresh
+   * budget of recovery attempts.
+   */
+  const resnapRecoveryAttemptsRef = useRef(0);
+  /**
+   * Whether the current `pendingDomIndexRef` came from a resize-transition
+   * effect (the reposition layout effect, or the panel-open stamp effect —
+   * both `behavior: "auto"`, no animation to interrupt) rather than from an
+   * in-progress smooth scroll (`goToSpread`'s default). Only the former
+   * should have `handleScroll` re-issue `scrollTo` on a mismatch (issue #68
+   * review): a smooth `goToSpread` scroll legitimately passes through
+   * intermediate spreads on its way to its target, each firing its own
+   * `scroll` event with `nearest !== pending` — re-issuing `scrollTo` there
+   * would cut the animation short into an instant jump on its very first
+   * frame. Set at every place `pendingDomIndexRef` is (re)stamped.
+   */
+  const pendingSelfHealRef = useRef(false);
   const scrollFrameRef = useRef<number | null>(null);
   /** Which way the reader is scrolling, updated alongside `scrollLeft` in
    * {@link handleScroll}; read (not depended on) by the prefetch effect. */
@@ -417,14 +487,38 @@ export function PdfViewer({
   );
   const total = spreads.length;
 
+  /** Spreads in scroll order: reversed for a right-bound book. */
+  const domSpreads = useMemo(
+    () => spreads.map((_, index) => spreads[toDomIndex(index, total, binding)]),
+    [spreads, total, binding],
+  );
+
+  // The zoom actually applied to the pages: `fit` resolves to a concrete
+  // number here, so layout, rendering and the toolbar's % display all deal in
+  // one effective zoom regardless of `zoomState`'s mode. `fitZoom`'s spread
+  // walk only runs inside this ternary branch — a `manual` zoom never needs
+  // it, so it must not re-run every time `domSpreads`/`pageSizes` change
+  // while the reader is not even in fit mode.
+  const zoom = useMemo(
+    () =>
+      zoomState.mode === "fit"
+        ? fitZoom(
+            viewportWidth,
+            domSpreads,
+            pageSizes,
+            SPREAD_PADDING,
+            PAGE_GAP,
+          )
+        : zoomState.value,
+    [zoomState, viewportWidth, domSpreads, pageSizes],
+  );
+
   const spreadIndex = clampSpreadIndex(
     Math.max(0, spreadIndexOfPage(spreads, currentPage)),
     total,
   );
   const spreadIndexRef = useRef(spreadIndex);
-  // Read inside the wheel listener so it never has to be re-registered.
-  const bindingRef = useRef(binding);
-  // Read inside the pinch listener, for the same reason.
+  // Read inside the pinch listener, so it never has to be re-registered.
   const zoomRef = useRef(zoom);
   /** A pinch starting while a clip drag is being made would fight it for the
    * same two fingers; read inside the pointerdown listener to keep it from
@@ -435,18 +529,22 @@ export function PdfViewer({
   // pointing at state that never became the UI. (Same reasoning as the
   // createClipRef/dragRef effect further down.) Declared ahead of every effect
   // that reads them, so they are already current by the time those run.
-  useEffect(() => {
+  //
+  // Must be a layout effect, not a passive one (issue #68 review): the
+  // reposition effect below reads `spreadIndexRef` and is itself a layout
+  // effect now (fit zoom ties spread widths to `viewportWidth`, so it has to
+  // run before paint — see its own comment). Layout effects in one commit
+  // run in declaration order, so keeping this one first is what makes the
+  // reposition effect see *this* commit's `spreadIndex`, not the previous
+  // commit's. A passive effect here would instead run after every layout
+  // effect in the commit, including that one — a scroll landing in the same
+  // commit as a resize or other layout change could then have the
+  // reposition effect scroll back to a spread that is already stale.
+  useLayoutEffect(() => {
     spreadIndexRef.current = spreadIndex;
-    bindingRef.current = binding;
     zoomRef.current = zoom;
     clipModeRef.current = clipMode;
   });
-
-  /** Spreads in scroll order: reversed for a right-bound book. */
-  const domSpreads = useMemo(
-    () => spreads.map((_, index) => spreads[toDomIndex(index, total, binding)]),
-    [spreads, total, binding],
-  );
 
   const layout = useMemo(
     () =>
@@ -682,6 +780,13 @@ export function PdfViewer({
       setCurrentPage(leadPage(spreads[next]));
       const domIndex = toDomIndex(next, total, binding);
       pendingDomIndexRef.current = domIndex;
+      resnapRecoveryAttemptsRef.current = 0;
+      // `"auto"` callers (issue #43's initial-page jump, the resize
+      // effects below) have nothing animated to protect, so `handleScroll`
+      // may fight back on their behalf; a `"smooth"` scroll legitimately
+      // passes through other spreads on the way to this one, and must not
+      // have that self-heal cut the animation short.
+      pendingSelfHealRef.current = behavior === "auto";
       scrollerRef.current?.scrollTo({
         left: scrollOffsetForItem(layout, domIndex, viewportWidth),
         behavior,
@@ -690,19 +795,63 @@ export function PdfViewer({
     [binding, layout, spreads, total, viewportWidth],
   );
 
-  // Keep the current spread on screen when the layout changes (zoom, view mode,
-  // binding, window resize). Deliberately not triggered by `spreadIndex`, which
-  // would fight the user's own scrolling.
-  useEffect(() => {
+  // Keep the current spread on screen when the layout changes (zoom, view
+  // mode, binding, window resize). Deliberately not triggered by
+  // `spreadIndex`, which would fight the user's own scrolling.
+  //
+  // Must be a *layout* effect, not a passive one (issue #68 review): since
+  // `fit` zoom ties the box widths in `layout` to `viewportWidth`, a resize
+  // (the notes panel opening, the window narrowing) changes every spread's
+  // scroll-snap position. `.scroller` uses `scroll-snap-type: x mandatory`,
+  // so the browser re-snaps on its own the moment the resize lands and fires
+  // a `scroll` event for it — synchronously reacting to the same commit that
+  // changed the box widths. A passive effect runs after paint, i.e. after
+  // that re-snap has already been dispatched; `handleScroll` would see the
+  // stale `layout`/new `scrollLeft` pairing, resolve the wrong nearest
+  // spread, and stamp `currentPage` with it before this effect ever got a
+  // chance to set `pendingDomIndexRef` and guard against exactly that. A
+  // layout effect runs before the browser paints (and thus before that
+  // re-snap can be observed), so the guard is already up by the time it
+  // matters.
+  useLayoutEffect(() => {
     const scroller = scrollerRef.current;
     if (!scroller || total === 0) return;
     const domIndex = toDomIndex(spreadIndexRef.current, total, binding);
     pendingDomIndexRef.current = domIndex;
+    resnapRecoveryAttemptsRef.current = 0;
+    pendingSelfHealRef.current = true;
     scroller.scrollTo({
       left: scrollOffsetForItem(layout, domIndex, viewportWidth),
       behavior: "auto",
     });
   }, [layout, viewportWidth, binding, total]);
+
+  /**
+   * Closes the window between a panel's mount/unmount commit (which resizes
+   * `.scroller`, and thus its scroll-snap positions, immediately) and the
+   * `viewportWidth`/`layout` state catching up with it (only after the
+   * `ResizeObserver` callback runs, on a later commit) — issue #68 review.
+   * The re-snap the browser performs when the panel's commit lands can still
+   * fire a `scroll` event inside that window, and with no pending target set
+   * yet, `handleScroll` would read it against the *old* `layout` and corrupt
+   * `currentPage` before the layout effect above ever gets to react to the
+   * new width. Stamping `pendingDomIndexRef` here — without scrolling, since
+   * `layout` is still stale — freezes `handleScroll` against that stray
+   * event; the layout effect above then lands on the right spread once the
+   * real resize is measured, and clears the pending flag itself. A genuine
+   * scroll or drag from the reader still overrides this via the existing
+   * `cancelPendingScroll` on pointer-down/wheel, so it cannot get stuck.
+   */
+  useLayoutEffect(() => {
+    if (total === 0) return;
+    pendingDomIndexRef.current = toDomIndex(
+      spreadIndexRef.current,
+      total,
+      binding,
+    );
+    resnapRecoveryAttemptsRef.current = 0;
+    pendingSelfHealRef.current = true;
+  }, [notesOpen, highlightsOpen, sidebarOpen, total, binding]);
 
   /**
    * Abandons an in-flight programmatic scroll. Without this, interrupting a
@@ -734,9 +883,71 @@ export function PdfViewer({
       // page out from under it.
       setPopup(null);
 
+      // `pendingDomIndexRef` alone only survives a single stray event (issue
+      // #68 review): a panel's resize commit changes `.scroller`'s *client*
+      // width immediately, but WebKit's own scroll-snap re-snap reacting to
+      // it (each spread box uses `scroll-snap-align: center`, so the snap
+      // position is derived straight from the client width) can drift across
+      // *several* `scroll` events before `viewportWidth` state — set from a
+      // `ResizeObserver` callback — catches up with that real width. The
+      // first of those events can land close enough to the spread the reader
+      // was already on for `nearest === pending` to hold, clearing the guard
+      // early and leaving the later drift events free to corrupt
+      // `currentPage`. This checks the actual invariant instead of counting
+      // events: `nearestItemIndex` below also takes `viewportWidth`, so as
+      // long as it disagrees with the real client width, its result cannot
+      // be trusted, no matter how many events have already fired. (A
+      // `scroller.scrollWidth`-vs-`layoutExtent(layout)` check was tried
+      // first, but every spread box's DOM width is itself painted straight
+      // from `layout` state — the same source `layoutExtent` reads — so the
+      // two only ever disagree from within-render rounding, never across the
+      // transition this guards against; a panel's resize changes the
+      // scroller's *client* width, not its content width, so that pairing
+      // never actually drifts apart.) `clientWidth` is always 0 in jsdom (it
+      // never lays boxes out for real), so this only ever engages in a real
+      // browser — tests stand it up by hand instead.
+      if (scroller.clientWidth > 0) {
+        if (Math.abs(scroller.clientWidth - viewportWidth) > 1) return;
+      }
+
       const nearest = nearestItemIndex(layout, left, viewportWidth);
       if (pendingDomIndexRef.current !== null) {
-        if (pendingDomIndexRef.current !== nearest) return;
+        const pending = pendingDomIndexRef.current;
+        if (pending !== nearest) {
+          // The pending guard alone stops this stray position from
+          // corrupting `currentPage`, but not from staying on screen (issue
+          // #68 review). Telemetry from a real device during a notes-panel
+          // open showed: the reposition layout effect issues
+          // `scrollTo(11872)` for spread 14 at the new 848px client width;
+          // the very next `scroll` event reports `left: 16976`, which is
+          // `16800` (the *pre-resize* pixel offset) re-snapped by the engine
+          // against the *new* 848px boxes (16800 / 848 ≈ 19.8 → spread 20) —
+          // WebKit re-snapping the scroll-snap container from its old raw
+          // offset on resize, landing after and overwriting the `scrollTo`
+          // this component already issued. `currentPage` stays correct
+          // (pending guards it), but the visible scroll position is left on
+          // the wrong spread with nothing to pull it back. Re-issuing
+          // `scrollTo` here fights back the same way: real telemetry shows
+          // this settling within a single re-issue, and the attempt cap
+          // above only guards against a browser that kept fighting back.
+          // Gated on `pendingSelfHealRef`: a mismatch here is also the
+          // normal, expected shape of an in-progress *smooth* `goToSpread`
+          // scroll passing through intermediate spreads — re-issuing
+          // `scrollTo` there would abort that animation into an instant
+          // jump on its first intermediate frame, which is not this fix's
+          // job (see `pendingSelfHealRef`'s own comment).
+          if (
+            pendingSelfHealRef.current &&
+            resnapRecoveryAttemptsRef.current < MAX_RESNAP_RECOVERY_ATTEMPTS
+          ) {
+            resnapRecoveryAttemptsRef.current += 1;
+            scroller.scrollTo({
+              left: scrollOffsetForItem(layout, pending, viewportWidth),
+              behavior: "auto",
+            });
+          }
+          return;
+        }
         pendingDomIndexRef.current = null;
       }
       const spread = domSpreads[nearest];
@@ -814,7 +1025,11 @@ export function PdfViewer({
   }, [notesOutlineFollow, outline, currentPage]);
 
   const runZoomCommand = useCallback((command: ZoomCommand) => {
-    setZoom((current) => applyZoomCommand(current, command));
+    // Always steps from the *effective* zoom (`zoomRef`), not the previous
+    // `zoomState` — under `fit` that state holds no number at all, and even
+    // under `manual` it can lag behind a `fit` that just changed underneath
+    // it a moment ago.
+    setZoomState(applyZoomCommand(zoomRef.current, command));
   }, []);
 
   // Keyboard: arrows follow the binding direction, Cmd/Ctrl +/-/0 zoom.
@@ -871,16 +1086,68 @@ export function PdfViewer({
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey || event.metaKey) {
         event.preventDefault();
-        setZoom((current) => pinchZoom(current, event.deltaY));
+        // A pinch is a deliberate zoom choice (issue #68): it goes manual
+        // from the effective zoom, same as the toolbar and keyboard.
+        //
+        // `zoomRef` is normally only written after commit (see its
+        // declaration above), but several wheel events can arrive in the
+        // same frame before React re-renders and that effect runs. Reading
+        // `zoomRef.current` alone would base every one of them on the same
+        // stale value and only the last write would stick, losing deltas —
+        // so it is advanced synchronously here, matching the accumulation a
+        // functional `setState(current => ...)` update used to give for
+        // free. The post-commit effect below will write back this same
+        // value, so it stays consistent.
+        const value = pinchZoom(zoomRef.current, event.deltaY);
+        zoomRef.current = value;
+        setZoomState({ mode: "manual", value });
         return;
       }
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
         event.preventDefault();
-        cancelPendingScroll();
-        scroller.scrollBy({
-          left: wheelScrollDelta(event.deltaY, bindingRef.current),
-          behavior: "auto",
-        });
+        // Turn by whole spreads instead of scrolling by the raw pixel delta
+        // (issue #68 / #71) — see `TURN_THRESHOLD`'s own comment for why a
+        // `scrollBy` no longer works here at all now that fit zoom makes
+        // every spread box exactly the viewport's width.
+        //
+        // Deliberately does *not* `cancelPendingScroll()` here, unlike every
+        // other gesture start in this file (the horizontal branch below
+        // included): a turn's own `goToSpread` call sets the very pending
+        // target this handler is walking towards, and the next wheel event
+        // in the same fling must not kill that smooth scroll out from under
+        // itself before it lands.
+        if (Number.isFinite(event.deltaY) && event.deltaY !== 0) {
+          const turn = wheelTurnRef.current;
+          const direction = Math.sign(event.deltaY) as -1 | 1;
+          const now = performance.now();
+          // A reversed direction or a long-enough pause reads as a new
+          // gesture: start the accumulator (and the running target it
+          // drives) over, seeded from wherever the reader actually is now.
+          if (
+            direction !== turn.direction ||
+            now - turn.lastEventAt > TURN_RESET_MS
+          ) {
+            turn.accum = 0;
+            turn.direction = direction;
+            turn.targetIndex = spreadIndexRef.current;
+          }
+          turn.lastEventAt = now;
+          turn.accum += event.deltaY;
+          // Down always reads on, regardless of binding: `goToSpread` ->
+          // `toDomIndex` already accounts for a right-bound book's reversed
+          // DOM order, so the spread-index space walked here never itself
+          // flips. Subtracting (rather than zeroing) the threshold each turn
+          // lets one outsized delta — a hard fling — turn several pages at
+          // once instead of clipping to one.
+          while (Math.abs(turn.accum) >= TURN_THRESHOLD) {
+            turn.accum -= TURN_THRESHOLD * direction;
+            turn.targetIndex = clampSpreadIndex(
+              turn.targetIndex + direction,
+              total,
+            );
+            goToSpread(turn.targetIndex);
+          }
+        }
       } else if (event.deltaX !== 0) {
         cancelPendingScroll();
       }
@@ -954,9 +1221,14 @@ export function PdfViewer({
       const points = pinchPoints(state);
       if (!points) return;
       const distance = pointerDistance(points[0], points[1]);
-      setZoom(
-        pinchZoomFromTouch(state.startZoom, state.startDistance, distance),
-      );
+      setZoomState({
+        mode: "manual",
+        value: pinchZoomFromTouch(
+          state.startZoom,
+          state.startDistance,
+          distance,
+        ),
+      });
     };
 
     /**
@@ -995,7 +1267,7 @@ export function PdfViewer({
       window.removeEventListener("pointerup", forgetPointerDown);
       window.removeEventListener("pointercancel", forgetPointerDown);
     };
-  }, [cancelPendingScroll]);
+  }, [cancelPendingScroll, goToSpread, total]);
 
   /**
    * A finished pointer gesture either carries a text selection (offer to

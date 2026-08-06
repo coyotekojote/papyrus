@@ -23,6 +23,7 @@ import { translate } from "../translation/translate";
 import { OVERSCAN_SETTLE_MS, PdfViewer } from "./PdfViewer";
 import { RenderQueue } from "./render-queue";
 import type { Binding, ViewMode } from "./spreads";
+import { pinchZoom } from "./zoom";
 
 vi.mock("../files/sidecar", async (importActual) => {
   const actual = await importActual<typeof import("../files/sidecar")>();
@@ -190,6 +191,39 @@ function touch(
   });
   Object.defineProperty(event, "pointerId", { value: pointerId });
   return event;
+}
+
+/**
+ * A `ResizeObserver` stand-in tests can fire by hand. jsdom's layout is
+ * always zero-sized (`src/test/setup.ts`'s stub reports nothing observable),
+ * so this is the only way to simulate the scroller actually changing width —
+ * the window resizing, or the notes panel opening and narrowing it (issue
+ * #68). Swapped in only for the tests that need it (`vi.stubGlobal`), since
+ * every other test relies on the inert default from the setup file.
+ */
+class ControllableResizeObserver {
+  static instances: ControllableResizeObserver[] = [];
+  private readonly callback: ResizeObserverCallback;
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback;
+    ControllableResizeObserver.instances.push(this);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  fire(width: number) {
+    this.callback(
+      [{ contentRect: { width } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
+
+/** Reports a new scroller width through the most recently registered observer. */
+function resizeViewport(width: number) {
+  const observer = ControllableResizeObserver.instances.at(-1);
+  if (!observer) throw new Error("no ResizeObserver was registered");
+  act(() => observer.fire(width));
 }
 
 /** Lets the rAF-throttled scroll handler run. */
@@ -449,6 +483,400 @@ describe("PdfViewer", () => {
     expect(vi.mocked(doc.renderPage).mock.calls.length).toBeGreaterThan(before);
     const lastCall = vi.mocked(doc.renderPage).mock.calls.at(-1);
     expect(lastCall?.[1].scale).toBe(1.25);
+  });
+
+  describe("fit zoom (issue #68)", () => {
+    beforeEach(() => {
+      ControllableResizeObserver.instances = [];
+      vi.stubGlobal("ResizeObserver", ControllableResizeObserver);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shrinks to fit a viewport narrower than the spread", () => {
+      renderViewer();
+
+      // Single-page spread, natural width 100 (fakeDoc's page size); with
+      // SPREAD_PADDING (24) on each side, a 100px viewport only has room for
+      // (100 - 48) / 100 = 52% of it.
+      resizeViewport(100);
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+    });
+
+    it("caps at 100% once the viewport has room to spare", () => {
+      renderViewer();
+
+      resizeViewport(200);
+      expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+    });
+
+    it("re-fits automatically as the viewport changes, e.g. opening notes", () => {
+      renderViewer();
+
+      resizeViewport(200);
+      expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
+
+      resizeViewport(100);
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+    });
+
+    it("switching to manual zoom stops tracking the viewport", async () => {
+      const { user } = renderViewer();
+      resizeViewport(100);
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "拡大" }));
+      // steppedZoom moves from the effective 52% to the next stop above it.
+      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+
+      resizeViewport(1000);
+      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+    });
+
+    it("Cmd+0 hands control back to fit, not a fixed 100%", async () => {
+      const { user } = renderViewer();
+      resizeViewport(100);
+
+      await user.click(screen.getByRole("button", { name: "拡大" }));
+      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+
+      // Meta (not Control): the Ctrl variant is already covered by the
+      // pre-existing shortcut test above; this exercises the metaKey path.
+      await user.keyboard("{Meta>}0{/Meta}");
+      // Back to fit: resolves to the same 52% the viewport calls for, not 100%.
+      expect(screen.getByRole("button", { name: "52%" })).toBeInTheDocument();
+    });
+
+    it("accounts for a two-page spread's fixed gap, not just its pages (issue #68 review)", () => {
+      renderViewer(PAGE_COUNT, [], { viewMode: "spread" });
+
+      // A 148px viewport leaves 100px available after SPREAD_PADDING (24 on
+      // each side). Every two-page spread here is 100 + 100 wide with the
+      // default 8px PAGE_GAP between its pages, so its own allowance is
+      // (100 - 8) / 200 = 46%. The old approach — fitting against the
+      // widest spread's *natural* width (100 + 100 + 8 = 208) instead of
+      // solving each spread's own (available - gap) / pages — would have
+      // landed on availableWidth / 208 ≈ 48% instead, letting the pages
+      // overflow past the gap it never subtracted.
+      resizeViewport(148);
+      expect(screen.getByRole("button", { name: "46%" })).toBeInTheDocument();
+    });
+
+    describe("currentPage survives a panel's resize commit (issue #68 review)", () => {
+      // Every spread here is a single page (default view mode), and each
+      // spread box is exactly as wide as the viewport whenever the viewport
+      // is wide enough to show a page at 100% (`spreadBoxWidth`) — true for
+      // every width used below — so domIndex `i`'s slot always sits at
+      // `i * boxWidth` and is `boxWidth` wide. That makes the scroll
+      // positions below exact, not approximate.
+
+      /**
+       * Fires a `scroll` event landing exactly on domIndex `index`'s slot at
+       * the given box width, and waits for the rAF-throttled handler.
+       */
+      async function settleAt(index: number, boxWidth: number) {
+        const element = scroller();
+        element.scrollLeft = index * boxWidth;
+        fireEvent.scroll(element);
+        await flushScroll();
+      }
+
+      /**
+       * Settles the reader on domIndex 2 (page 3 of `PAGE_COUNT`) at an
+       * 800px viewport and clears any pending programmatic scroll, so the
+       * corrupting scroll event fired later in each test is unambiguously
+       * the only thing that could move `currentPage`. `goToSpread`'s own
+       * smooth-scroll target never actually moves `scrollLeft` in jsdom;
+       * `settleAt` reports it arrived by hand instead.
+       */
+      async function settleOnThirdPage() {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        await user.keyboard("{ArrowRight}");
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        await settleAt(2, 800);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      }
+
+      /**
+       * Fires a `scroll` event at the slot for domIndex 3, using the layout
+       * and viewport width still in effect *before* a panel's real resize
+       * has been measured — standing in for the browser's own scroll-snap
+       * reaction to `.scroller` narrowing the instant the panel's DOM
+       * mutation commits, which reaches `handleScroll` before `viewportWidth`
+       * has caught up with the new width. `boxWidth` must match whatever
+       * width is currently in effect for this to land on a spread other than
+       * the one the reader is actually on.
+       */
+      function fireMisalignedResnapScroll(boxWidth: number) {
+        const element = scroller();
+        element.scrollLeft = 3 * boxWidth;
+        fireEvent.scroll(element);
+      }
+
+      it("is corrupted by a stray re-snap scroll when nothing guards the resize commit (control)", async () => {
+        // This reproduces the bug on a sequence with nothing at all opening
+        // or closing a panel, to confirm the scenario below actually
+        // exercises the regression: with no pending target set,
+        // `handleScroll` has nothing to reject the stray event with, and
+        // takes it as the truth.
+        await settleOnThirdPage();
+
+        fireMisalignedResnapScroll(800);
+        await flushScroll();
+
+        expect(screen.getByText(`4 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("stays on the same page when the notes panel opens, before the resize is measured", async () => {
+        await settleOnThirdPage();
+
+        // Opening the panel is what the fix must guard: its own commit
+        // stamps `pendingDomIndexRef` synchronously (a layout effect), before
+        // this hand-fired stand-in for the browser's re-snap event can be
+        // observed.
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+
+        fireMisalignedResnapScroll(800);
+        await flushScroll();
+
+        // Unlike the control test above, the guard set when the panel opened
+        // must have rejected this scroll: still page 3, not 4.
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // The real resize then lands (e.g. the notes panel's width applying,
+        // reported through the ResizeObserver) and must settle cleanly on
+        // the original page rather than leaving anything stuck.
+        resizeViewport(700);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("stays on the same page when the notes panel closes, before the resize is measured", async () => {
+        await settleOnThirdPage();
+        const user = userEvent.setup();
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        resizeViewport(700);
+        // Settle for real at the opened width, so the guard the close click
+        // exercises below is its own — not leftover from the open above.
+        await settleAt(2, 700);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Closing goes through the same guarded commit as opening did.
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+
+        fireMisalignedResnapScroll(700);
+        await flushScroll();
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        resizeViewport(800);
+        expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+    });
+
+    describe("handleScroll ignores drift while viewportWidth hasn't caught up with the DOM (issue #68 review)", () => {
+      /**
+       * Reports `scroller.clientWidth` as `width` on the element instance
+       * (overriding jsdom's own accessor, which always reports 0 — real
+       * layout never happens there). Only an instance override is needed:
+       * each test renders its own viewer, so nothing leaks across tests.
+       */
+      function stubClientWidth(width: number) {
+        Object.defineProperty(scroller(), "clientWidth", {
+          configurable: true,
+          value: width,
+        });
+      }
+
+      /** Fires a `scroll` event at `left` and lets the rAF handler run. */
+      async function scrollTo(left: number) {
+        const element = scroller();
+        element.scrollLeft = left;
+        fireEvent.scroll(element);
+        await flushScroll();
+      }
+
+      it("ignores repeated drift events while clientWidth disagrees with viewportWidth", async () => {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+
+        // Settle on domIndex 0 for real (default `clientWidth`, 0 in jsdom,
+        // leaves the invariant check below inactive) so the pending guard
+        // from the initial resize is cleared before the drift below —
+        // otherwise that guard alone, not the invariant this test is about,
+        // would already block it.
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // `resizeViewport(800)` above is what set `viewportWidth` to 800; a
+        // real client width 100px off that — as `.scroller` would carry
+        // mid-resize, before the next `ResizeObserver` callback updates
+        // `viewportWidth` — must keep `nearestItemIndex`'s viewportWidth
+        // input (and thus its result) from being trusted, no matter how many
+        // drift events arrive while it disagrees.
+        stubClientWidth(700);
+
+        // Three separate `scroll` events (separate rAF ticks), all landing
+        // on domIndex 1's slot — standing in for WebKit's re-snap drifting
+        // across several events rather than settling on the first one, which
+        // is exactly what let it slip past a pending-only guard.
+        await scrollTo(800);
+        await scrollTo(800);
+        await scrollTo(800);
+
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("resumes updating currentPage once clientWidth agrees with viewportWidth again", async () => {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Matches `viewportWidth` exactly: the DOM has caught up, so this is
+        // indistinguishable from a real, settled browser.
+        stubClientWidth(800);
+        await scrollTo(800);
+
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+    });
+
+    describe("handleScroll re-issues scrollTo when the engine re-snaps over a pending target (issue #68 review)", () => {
+      // Real-device telemetry: a panel opening issues a reposition
+      // `scrollTo` for the pending spread at the new client width, but
+      // WebKit can re-snap the container from its *old* pixel offset against
+      // the *new* box widths, landing on a different spread and overwriting
+      // that `scrollTo` after the fact. The pending guard alone keeps
+      // `currentPage` correct (the mismatched event never passes it), but
+      // does nothing to pull the *view* back — nothing was re-issuing
+      // `scrollTo` after the engine's own overwrite. These tests exercise
+      // that recovery directly, once a pending target is already set.
+
+      /** Fires a `scroll` event at `left` and lets the rAF handler run. */
+      async function scrollTo(left: number) {
+        const element = scroller();
+        element.scrollLeft = left;
+        fireEvent.scroll(element);
+        await flushScroll();
+      }
+
+      // A failed assertion would skip an inline `mockRestore()`, leaking the
+      // `Element.prototype.scrollTo` spy into later tests — restoring it in
+      // `afterEach` runs either way. Deliberately narrower than
+      // `vi.restoreAllMocks()`, which would also tear down spies other
+      // describes set up once at collection time (the wheel-scrolling
+      // block's `scrollBy` spy, for one) before their own tests ever run.
+      let scrollToSpy: ReturnType<typeof vi.spyOn> | undefined;
+      function spyOnScrollTo() {
+        scrollToSpy = vi.spyOn(Element.prototype, "scrollTo");
+        return scrollToSpy;
+      }
+      afterEach(() => {
+        scrollToSpy?.mockRestore();
+        scrollToSpy = undefined;
+      });
+
+      /**
+       * Settles on page 2 (domIndex 1) and then re-stamps a pending target
+       * there through the panel-open path (`notesOpen`'s stamp effect,
+       * `behavior: "auto"`) rather than through a smooth `goToSpread` —
+       * `pendingSelfHealRef` only enables the recovery these tests are about
+       * for the former (issue #68 review). The `ArrowRight` used to get to
+       * page 2 sets its own, smooth-flagged pending target first; settling
+       * it for real (rather than leaving it hanging) keeps that from being
+       * the pending target these tests end up exercising instead.
+       */
+      async function pendingViaPanelOpen() {
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        await scrollTo(1 * 800);
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Opening the notes panel re-stamps pending at domIndex 1 (where the
+        // reader now actually is) through the `auto`/self-heal-eligible path.
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        return user;
+      }
+
+      it("re-issues scrollTo at the pending spread's offset and leaves currentPage alone", async () => {
+        const scrollToSpy = spyOnScrollTo();
+        await pendingViaPanelOpen();
+        scrollToSpy.mockClear();
+
+        // A scroll landing on domIndex 3's slot instead — standing in for
+        // the engine's own re-snap overwriting the pending `scrollTo` above.
+        await scrollTo(3 * 800);
+
+        // currentPage must not have been dragged along to whatever spread
+        // this stray position nominally points at.
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        // The view must have been fought back to the pending spread's own
+        // offset (domIndex 1 at an 800px box width: 1 * 800 = 800), not left
+        // wherever the engine's re-snap put it.
+        expect(scrollToSpy).toHaveBeenCalledWith({
+          left: 800,
+          behavior: "auto",
+        });
+      });
+
+      it("stops re-issuing scrollTo once the recovery cap is reached, without corrupting currentPage", async () => {
+        const scrollToSpy = spyOnScrollTo();
+        await pendingViaPanelOpen();
+        scrollToSpy.mockClear();
+
+        // A browser that kept re-snapping away from the pending spread on
+        // every single event — the pathological case the cap exists for.
+        // MAX_RESNAP_RECOVERY_ATTEMPTS is 8 as of this writing; this fires
+        // more than that so the cap is what stops it, not running out of
+        // events.
+        for (let i = 0; i < 10; i += 1) {
+          await scrollTo(3 * 800);
+        }
+
+        expect(scrollToSpy).toHaveBeenCalledTimes(8);
+        // Giving up on re-issuing scrollTo must not also give up on the
+        // pending guard: currentPage still must not have been corrupted.
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("does not re-issue scrollTo for an in-progress smooth goToSpread scroll", async () => {
+        const scrollToSpy = spyOnScrollTo();
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // `ArrowRight` is a smooth `goToSpread`; its own pending target is
+        // *not* self-heal-eligible (`pendingSelfHealRef` stays false), since
+        // a real smooth scroll legitimately passes through other spreads —
+        // each firing its own `scroll` event with `nearest !== pending` — on
+        // its way to landing.
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        scrollToSpy.mockClear();
+
+        // Stands in for an intermediate frame of that smooth animation,
+        // still short of domIndex 1.
+        await scrollTo(3 * 800);
+
+        expect(scrollToSpy).not.toHaveBeenCalled();
+        // The pending guard on its own still keeps currentPage from being
+        // dragged along to this intermediate position.
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+    });
   });
 
   it("closes the document from the toolbar", async () => {
@@ -865,28 +1293,102 @@ describe("PdfViewer", () => {
   });
 
   describe("wheel scrolling", () => {
-    const scrollBy = vi.spyOn(Element.prototype, "scrollBy");
+    // Fit zoom makes every spread box exactly as wide as the viewport
+    // (issue #68), which leaves `scroll-snap-type: x mandatory` no free
+    // range inside a box for a raw pixel `scrollBy` to move through — the
+    // engine snaps straight back on every event. Wheel/trackpad paging turns
+    // whole spreads instead (issue #68 / #71, `TURN_THRESHOLD`), so these
+    // assert against the page indicator rather than a `scrollBy` call.
 
-    afterEach(() => scrollBy.mockClear());
-
-    it("scrolls forward on a downward wheel in a left-bound book", () => {
+    it("turns the page after one classic wheel notch (deltaY 120)", () => {
       renderViewer();
 
       fireEvent.wheel(scroller(), { deltaY: 120, deltaX: 0 });
 
-      expect(scrollBy).toHaveBeenCalledWith({ left: 120, behavior: "auto" });
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
     });
 
     it("still reads forward on a downward wheel once right-bound", async () => {
       const { user } = renderViewer();
       await user.click(screen.getByRole("button", { name: "左綴じ" }));
-      scrollBy.mockClear();
 
       fireEvent.wheel(scroller(), { deltaY: 120, deltaX: 0 });
 
-      // Right-bound spreads are laid out reversed, so reading on means moving
-      // towards a smaller scroll offset.
-      expect(scrollBy).toHaveBeenCalledWith({ left: -120, behavior: "auto" });
+      // "Down" always means "read on", regardless of binding: `goToSpread`
+      // -> `toDomIndex` is what flips the physical scroll direction for a
+      // right-bound book, so the wheel handler's own turn direction never
+      // has to.
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("does not turn the page before the threshold is reached", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 60, deltaX: 0 });
+
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("turns the page once several small deltas accumulate past the threshold", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 60, deltaX: 0 });
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      fireEvent.wheel(scroller(), { deltaY: 60, deltaX: 0 });
+
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("turns several pages from one outsized delta, e.g. a hard fling", () => {
+      renderViewer(PAGE_COUNT);
+
+      // 2.5 notches' worth in one event: two full turns (240 consumed),
+      // leaving 60 short of a third.
+      fireEvent.wheel(scroller(), { deltaY: 300, deltaX: 0 });
+
+      expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("resets the accumulator on a direction reversal", () => {
+      renderViewer();
+
+      // One notch and change forward: lands on page 2, with 80 left over.
+      fireEvent.wheel(scroller(), { deltaY: 200, deltaX: 0 });
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      // Reverses direction; without a reset this would sum with the 80 left
+      // over (-30 + 80 = 50, still short) rather than starting over at -30 —
+      // either way short of the threshold here, so this alone only pins down
+      // that reversing does not turn a page it should not yet.
+      fireEvent.wheel(scroller(), { deltaY: -30, deltaX: 0 });
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      // Enough more in the same (reversed) direction to cross the threshold
+      // from the reset accumulator (-30 + -100 = -130): had the leftover 80
+      // instead carried over un-reset, -30 + 80 + -100 = -50 would still be
+      // short, and this would still show page 2.
+      fireEvent.wheel(scroller(), { deltaY: -100, deltaX: 0 });
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("resets the accumulator after a pause longer than the reset timeout", () => {
+      const now = vi.spyOn(performance, "now");
+      now.mockReturnValue(0);
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 100, deltaX: 0 });
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      // Longer than TURN_RESET_MS (300ms) since the event above.
+      now.mockReturnValue(1000);
+      fireEvent.wheel(scroller(), { deltaY: 100, deltaX: 0 });
+
+      // Had the accumulator survived the pause, 100 + 100 would already have
+      // crossed the threshold and turned a page.
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      now.mockRestore();
     });
 
     it("leaves a horizontal wheel to the browser", () => {
@@ -894,7 +1396,7 @@ describe("PdfViewer", () => {
 
       fireEvent.wheel(scroller(), { deltaY: 0, deltaX: 120 });
 
-      expect(scrollBy).not.toHaveBeenCalled();
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
     });
 
     it("zooms instead of scrolling when the wheel carries ctrl", () => {
@@ -902,12 +1404,33 @@ describe("PdfViewer", () => {
 
       fireEvent.wheel(scroller(), { deltaY: -100, ctrlKey: true });
 
-      expect(scrollBy).not.toHaveBeenCalled();
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "100%" })).toBeNull();
+    });
+
+    it("accumulates deltas from wheel events landing in the same commit", () => {
+      renderViewer();
+
+      // Two pinch ticks dispatched inside one `act()`, so React has no
+      // chance to commit (and refresh `zoomRef`) between them — this is
+      // what several wheel events arriving within a single frame look like.
+      // Each must still compound onto the other's result, the same
+      // guarantee the old `setZoom(current => ...)` functional update gave;
+      // reading a `zoomRef` that was only refreshed once, after both, would
+      // silently drop the first delta.
+      act(() => {
+        fireEvent.wheel(scroller(), { deltaY: -50, ctrlKey: true });
+        fireEvent.wheel(scroller(), { deltaY: -50, ctrlKey: true });
+      });
+
+      const expected = Math.round(pinchZoom(pinchZoom(1, -50), -50) * 100);
+      expect(
+        screen.getByRole("button", { name: `${expected}%` }),
+      ).toBeInTheDocument();
     });
   });
 
-  it("lets the page indicator recover when a smooth scroll is interrupted", async () => {
+  it("lets the page indicator recover when an in-flight scroll is interrupted", async () => {
     const { user } = renderViewer();
 
     // Navigate away; jsdom performs no actual scrolling, so the viewer is still
@@ -915,8 +1438,13 @@ describe("PdfViewer", () => {
     await user.keyboard("{ArrowRight}");
     expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
 
-    // The user grabs the wheel mid-flight, abandoning that scroll.
-    fireEvent.wheel(scroller(), { deltaY: 10, deltaX: 0 });
+    // A horizontal wheel/trackpad pan grabs the scroller directly and
+    // abandons the pending scroll, the same as a pointer-down does — unlike
+    // a *vertical* wheel, which deliberately leaves an in-progress page turn
+    // alone (issue #68 / #71: it may well be that turn's own pending target,
+    // and the next tick of the same fling must not cancel it out from under
+    // itself).
+    fireEvent.wheel(scroller(), { deltaY: 0, deltaX: 10 });
     fireEvent.scroll(scroller());
     await flushScroll();
 
