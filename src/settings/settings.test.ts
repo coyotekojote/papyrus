@@ -114,6 +114,19 @@ describe("normalizeSettings", () => {
     expect(settings.notesOutlineFollow).toBe(false);
   });
 
+  it("keeps an explicit true for either outline setting, including notesOutlineFollow's non-default direction", () => {
+    // notesOutlineFollow defaults to false (issue #74); this is what
+    // actually exercises the reader opting back into it, which the
+    // false-for-both case above cannot — false is indistinguishable there
+    // from just falling back to the default.
+    const settings = normalizeSettings({
+      notesOutlineInsert: true,
+      notesOutlineFollow: true,
+    });
+    expect(settings.notesOutlineInsert).toBe(true);
+    expect(settings.notesOutlineFollow).toBe(true);
+  });
+
   it("falls back to each field's own default for a non-boolean outline setting", () => {
     for (const value of ["true", 0, null, undefined, {}]) {
       const settings = normalizeSettings({
