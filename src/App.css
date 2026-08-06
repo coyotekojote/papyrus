@@ -807,6 +807,11 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
+  /* `padding-bottom` here is only the floor: NotesPanel.tsx (issue #74)
+     overrides it with an inline style sized to the editor's own height, so
+     the last line of a long note can still scroll up into view. A `vh`-based
+     value could not do this — percentage padding always resolves against the
+     box's *width*, never its height, in CSS. */
   padding: 0.6rem;
   border: none;
   background: transparent;
