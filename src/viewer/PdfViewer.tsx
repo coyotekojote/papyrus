@@ -5,6 +5,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { blobToBase64 } from "../files/base64";
@@ -14,6 +16,10 @@ import {
   type NormalizedRect,
 } from "../files/sidecar";
 import { NotesPanel } from "../notes/NotesPanel";
+import {
+  NOTES_PANEL_DEFAULT_WIDTH,
+  NOTES_PANEL_MIN_WIDTH,
+} from "../settings/settings";
 import {
   formatOutlineHeadings,
   outlineHeadingTitle,
@@ -64,6 +70,13 @@ import {
   spreadContentHeight,
   spreadContentWidth,
 } from "./layout";
+import {
+  clampNotesWidth,
+  maxNotesWidthFor,
+  notesWidthFromPointer,
+  NOTES_PANEL_KEY_STEP,
+  type NotesViewport,
+} from "./notes-resize";
 import { PageRenderCache } from "./page-cache";
 import { RenderQueue } from "./render-queue";
 import { defaultViewModeForScreen, useIsCompactScreen } from "./responsive";
@@ -204,6 +217,18 @@ export interface PdfViewerProps {
    */
   notesOutlineFollow?: boolean;
   /**
+   * Width of the notes panel in px (issue #76), from the app settings. The
+   * reader drags its edge to change it; what is dragged to is reported back
+   * through `onNotesPanelWidthChange` rather than kept here, so the width
+   * outlives the document.
+   */
+  notesPanelWidth?: number;
+  /**
+   * Notified once a drag (or an arrow key on the handle) has settled on a new
+   * width, for the caller to persist — not for every frame of the drag.
+   */
+  onNotesPanelWidthChange?: (width: number) => void;
+  /**
    * 1-based page to open on (issue #43), from the recent-files entry.
    * Clamping into `[1, doc.pageCount]` is this component's job, not the
    * caller's: omitted starts the document at page 1, and an out-of-range
@@ -294,6 +319,8 @@ export function PdfViewer({
   defaultViewMode = "single",
   notesOutlineInsert = true,
   notesOutlineFollow = false,
+  notesPanelWidth = NOTES_PANEL_DEFAULT_WIDTH,
+  onNotesPanelWidthChange,
   initialPage,
   onPageChange,
   onClose,
@@ -368,6 +395,20 @@ export function PdfViewer({
     setAppliedViewMode(defaultViewModeHere);
     setViewMode(defaultViewModeHere);
   }
+  /**
+   * The width the panel is drawn at (issue #76). Local while a drag is in
+   * flight — the setting is only written once the reader lets go — and put
+   * back in step with the stored width whenever that changes, by the same
+   * "adjusting state when a prop changes" pattern as the two above.
+   */
+  const [notesWidth, setNotesWidth] = useState(notesPanelWidth);
+  /** True while the edge is being dragged; the panel stops selecting text. */
+  const [notesResizing, setNotesResizing] = useState(false);
+  const [appliedNotesWidth, setAppliedNotesWidth] = useState(notesPanelWidth);
+  if (appliedNotesWidth !== notesPanelWidth) {
+    setAppliedNotesWidth(notesPanelWidth);
+    setNotesWidth(notesPanelWidth);
+  }
 
   const annotations = useAnnotations(filePath);
   const notes = useNotes(filePath);
@@ -391,6 +432,20 @@ export function PdfViewer({
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   /** The live drag, for the window listeners that must not re-register on move. */
   const dragRef = useRef<ClipDrag | null>(null);
+  const notesPanelRef = useRef<HTMLElement>(null);
+  /**
+   * The notes-panel resize in flight (issue #76): which pointer owns it, and
+   * where the panel's right edge was when it started. That edge is measured
+   * once because it cannot move — the panel is anchored to it — and measuring
+   * it per move would read a rect the drag itself is changing.
+   */
+  const notesResizeRef = useRef<{
+    pointerId: number;
+    panelRight: number;
+  } | null>(null);
+  /** The scheduled width update, so a move burst costs one render per frame. */
+  const notesResizeFrameRef = useRef<number | null>(null);
+  const notesPointerXRef = useRef(0);
   /**
    * Pointers currently down on the scroller, for two-finger pinch-to-zoom.
    * Tracked by id because a third finger touching down (a stray palm, most
@@ -1656,6 +1711,137 @@ export function PdfViewer({
   // put its result.
   useEffect(() => () => clipAbortRef.current?.abort(), []);
 
+  /**
+   * The window a notes resize is measured against (issue #76). Read at the
+   * moment it is needed rather than kept in state: what the cap depends on is
+   * the window's own width — which no state here tracks — and whether the
+   * compact layout is in force, which decides *which* CSS guard the drag has
+   * to agree with (60vw sharing the row with the pages, 90vw covering them).
+   */
+  const notesViewport = useCallback(
+    (): NotesViewport => ({ width: window.innerWidth, isCompact }),
+    [isCompact],
+  );
+
+  /**
+   * Dragging the notes panel's inner edge (issue #76).
+   *
+   * The pointer is captured by the handle, so the drag keeps arriving there
+   * even once it has left the handle — over the pages, or off the window
+   * entirely — and ends where the reader let go rather than wherever the
+   * pointer last crossed something else.
+   */
+  const beginNotesResize = useCallback((event: ReactPointerEvent) => {
+    const panel = notesPanelRef.current;
+    if (!panel || notesResizeRef.current !== null) return;
+    // Otherwise the drag selects the note's text along the way.
+    event.preventDefault();
+    // Optional because capture is what keeps the drag on the handle, not what
+    // makes it work: an environment without it still resizes, it just loses
+    // the drag if the pointer outruns the handle.
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    notesResizeRef.current = {
+      pointerId: event.pointerId,
+      panelRight: panel.getBoundingClientRect().right,
+    };
+    notesPointerXRef.current = event.clientX;
+    setNotesResizing(true);
+  }, []);
+
+  const handleNotesResizeMove = useCallback(
+    (event: ReactPointerEvent) => {
+      const resize = notesResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      notesPointerXRef.current = event.clientX;
+      // One width per frame: each one re-lays out the pages (the fit zoom of
+      // issue #68 follows the scroller's width), which is not worth doing at
+      // whatever rate the pointer reports at. The position is read from the
+      // ref inside the frame, so throttling costs staleness, not accuracy.
+      if (notesResizeFrameRef.current !== null) return;
+      notesResizeFrameRef.current = requestAnimationFrame(() => {
+        notesResizeFrameRef.current = null;
+        setNotesWidth(
+          notesWidthFromPointer(
+            notesPointerXRef.current,
+            resize.panelRight,
+            notesViewport(),
+          ),
+        );
+      });
+    },
+    [notesViewport],
+  );
+
+  /**
+   * Ends the drag and persists what it landed on — including on
+   * `pointercancel`, where the panel keeps the width it had reached and the
+   * setting would otherwise disagree with what is on screen.
+   *
+   * A release is measured from the event itself: that is where the reader let
+   * go. A cancel is not — a cancelled pointer is allowed to report (0, 0),
+   * which would read as a drag to the far left and store the panel at its
+   * widest. The last position an actual move reported is what the panel is
+   * already showing, so that is what the cancel keeps.
+   */
+  const endNotesResize = useCallback(
+    (event: ReactPointerEvent) => {
+      const resize = notesResizeRef.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      notesResizeRef.current = null;
+      setNotesResizing(false);
+      if (notesResizeFrameRef.current !== null) {
+        cancelAnimationFrame(notesResizeFrameRef.current);
+        notesResizeFrameRef.current = null;
+      }
+      const width = notesWidthFromPointer(
+        event.type === "pointercancel"
+          ? notesPointerXRef.current
+          : event.clientX,
+        resize.panelRight,
+        notesViewport(),
+      );
+      setNotesWidth(width);
+      onNotesPanelWidthChange?.(width);
+    },
+    [notesViewport, onNotesPanelWidthChange],
+  );
+
+  /**
+   * The handle by keyboard: the panel is to the right of the pages, so left
+   * widens it and right narrows it — the direction the edge itself moves. Each
+   * press is a finished change, so it is saved like the end of a drag.
+   */
+  const handleNotesResizeKey = useCallback(
+    (event: ReactKeyboardEvent) => {
+      const step =
+        event.key === "ArrowLeft"
+          ? NOTES_PANEL_KEY_STEP
+          : event.key === "ArrowRight"
+            ? -NOTES_PANEL_KEY_STEP
+            : 0;
+      if (step === 0) return;
+      // The panel already keeps arrow keys from turning pages; this also keeps
+      // them from moving the note's caret behind the handle.
+      event.preventDefault();
+      const width = clampNotesWidth(notesWidth + step, notesViewport());
+      if (width === notesWidth) return;
+      setNotesWidth(width);
+      onNotesPanelWidthChange?.(width);
+    },
+    [notesViewport, notesWidth, onNotesPanelWidthChange],
+  );
+
+  // A frame scheduled by a drag that ends with the document closing has
+  // nothing left to resize.
+  useEffect(
+    () => () => {
+      if (notesResizeFrameRef.current !== null) {
+        cancelAnimationFrame(notesResizeFrameRef.current);
+      }
+    },
+    [],
+  );
+
   // Both complaints below are derived rather than stored, so each goes away by
   // itself once the state that produced it resolves — a sidecar that finishes
   // loading, a conflict the reader settles.
@@ -1951,7 +2137,17 @@ export function PdfViewer({
 
         {notesOpen ? (
           <aside
-            className="sidebar sidebar--right sidebar--notes"
+            ref={notesPanelRef}
+            className={
+              notesResizing
+                ? "sidebar sidebar--right sidebar--notes sidebar--resizing"
+                : "sidebar sidebar--right sidebar--notes"
+            }
+            // The dragged width (issue #76) reaches the stylesheet as a custom
+            // property, so the CSS keeps the say over how it is applied — the
+            // `60vw` guard for a width saved on a wider window, and the
+            // compact layout's own cap.
+            style={{ "--notes-width": `${notesWidth}px` } as CSSProperties}
             aria-label="メモ"
             // Arrow keys belong to the editor's caret here, not to page turns.
             onKeyDown={(event) => {
@@ -1960,6 +2156,25 @@ export function PdfViewer({
               }
             }}
           >
+            <div
+              className="sidebar__resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="メモ欄の幅"
+              // Reported as the window allows rather than as stored: a width
+              // saved on a wider window is capped by the CSS until the first
+              // drag re-clamps it, and the handle should not claim a width
+              // the panel is not at (or a maximum it cannot be dragged to).
+              aria-valuenow={clampNotesWidth(notesWidth, notesViewport())}
+              aria-valuemin={NOTES_PANEL_MIN_WIDTH}
+              aria-valuemax={maxNotesWidthFor(notesViewport())}
+              tabIndex={0}
+              onPointerDown={beginNotesResize}
+              onPointerMove={handleNotesResizeMove}
+              onPointerUp={endNotesResize}
+              onPointerCancel={endNotesResize}
+              onKeyDown={handleNotesResizeKey}
+            />
             <NotesPanel
               pdfPath={filePath}
               clips={annotations.annotations.clips}

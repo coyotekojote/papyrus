@@ -242,6 +242,8 @@ interface ViewerDefaults {
    */
   notesOutlineInsert?: boolean;
   notesOutlineFollow?: boolean;
+  /** Issue #76; left at the component default (352px) unless overridden. */
+  notesPanelWidth?: number;
 }
 
 function renderViewer(
@@ -255,6 +257,7 @@ function renderViewer(
   const doc = fakeDoc(pageCount, outline);
   const onClose = vi.fn();
   const onOpenSettings = vi.fn();
+  const onNotesPanelWidthChange = vi.fn();
   const view = (next: ViewerDefaults) => (
     <PdfViewer
       doc={doc}
@@ -265,6 +268,8 @@ function renderViewer(
       defaultViewMode={next.viewMode}
       notesOutlineInsert={next.notesOutlineInsert}
       notesOutlineFollow={next.notesOutlineFollow}
+      notesPanelWidth={next.notesPanelWidth}
+      onNotesPanelWidthChange={onNotesPanelWidthChange}
       initialPage={paging.initialPage}
       onPageChange={paging.onPageChange}
       onClose={onClose}
@@ -276,6 +281,7 @@ function renderViewer(
     doc,
     onClose,
     onOpenSettings,
+    onNotesPanelWidthChange,
     unmount,
     user: userEvent.setup(),
     /** Stands in for the reader changing the settings mid-document. */
@@ -2321,9 +2327,9 @@ describe("PdfViewer", () => {
   });
 
   describe("notes panel", () => {
-    async function openNotes(content = "") {
+    async function openNotes(content = "", defaults: ViewerDefaults = {}) {
       vi.mocked(loadNotes).mockResolvedValue({ content, modifiedAtMs: 7 });
-      const viewer = renderViewer();
+      const viewer = renderViewer(PAGE_COUNT, [], defaults);
       await viewer.user.click(screen.getByRole("button", { name: "メモ" }));
       return {
         ...viewer,
@@ -2425,6 +2431,140 @@ describe("PdfViewer", () => {
       expect(
         screen.queryByRole("textbox", { name: "メモ (markdown)" }),
       ).toBeNull();
+    });
+
+    describe("幅のドラッグ (issue #76)", () => {
+      /** The panel and its handle, with the panel pinned where jsdom cannot
+       *  measure it: layout is what a drag reads its width from. */
+      function notesPanelAt(right: number) {
+        const panel = screen.getByRole("complementary", { name: "メモ" });
+        panel.getBoundingClientRect = () =>
+          ({ right, left: right - 352, width: 352 }) as DOMRect;
+        return {
+          panel,
+          handle: screen.getByRole("separator", { name: "メモ欄の幅" }),
+          width: () => panel.style.getPropertyValue("--notes-width"),
+        };
+      }
+
+      it("opens at the width from the settings", async () => {
+        await openNotes("", { notesPanelWidth: 500 });
+
+        expect(notesPanelAt(1000).width()).toBe("500px");
+      });
+
+      it("follows the stored width when the setting changes", async () => {
+        const { changeSettings } = await openNotes("", {
+          notesPanelWidth: 500,
+        });
+
+        act(() => changeSettings({ notesPanelWidth: 400 }));
+
+        expect(notesPanelAt(1000).width()).toBe("400px");
+      });
+
+      it("resizes to where the drag ends and reports it once, on release", async () => {
+        const { onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
+        fireEvent.pointerMove(handle, { pointerId: 1, clientX: 600 });
+        // Nothing is saved mid-drag: the setting is written once the reader
+        // has settled on a width, not once per frame of getting there.
+        expect(onNotesPanelWidthChange).not.toHaveBeenCalled();
+
+        fireEvent.pointerUp(handle, { pointerId: 1, clientX: 550 });
+
+        expect(width()).toBe("450px");
+        expect(onNotesPanelWidthChange).toHaveBeenCalledTimes(1);
+        expect(onNotesPanelWidthChange).toHaveBeenCalledWith(450);
+      });
+
+      it("stops at the narrowest width for a drag past the panel's own edge", async () => {
+        const { onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
+        fireEvent.pointerUp(handle, { pointerId: 1, clientX: 1200 });
+
+        expect(width()).toBe("240px");
+        expect(onNotesPanelWidthChange).toHaveBeenCalledWith(240);
+      });
+
+      it("keeps the width a cancelled drag reached, not where the cancel says the pointer was", async () => {
+        const { onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
+        fireEvent.pointerMove(handle, { pointerId: 1, clientX: 600 });
+        // A cancelled pointer is allowed to come back at (0, 0). Taken at
+        // face value that reads as a drag to the far left, and the panel
+        // would be stored at its widest instead of the 400px on screen.
+        fireEvent.pointerCancel(handle, { pointerId: 1, clientX: 0 });
+
+        expect(width()).toBe("400px");
+        expect(onNotesPanelWidthChange).toHaveBeenCalledWith(400);
+      });
+
+      it("keeps the width it started at when a drag is cancelled before it moves", async () => {
+        const { onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
+        fireEvent.pointerCancel(handle, { pointerId: 1, clientX: 0 });
+
+        expect(width()).toBe("352px");
+        expect(onNotesPanelWidthChange).toHaveBeenCalledWith(352);
+      });
+
+      it("ignores a pointer that is not the one that started the drag", async () => {
+        const { onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
+        // A second finger landing on the handle mid-drag.
+        fireEvent.pointerUp(handle, { pointerId: 2, clientX: 800 });
+
+        expect(width()).toBe("352px");
+        expect(onNotesPanelWidthChange).not.toHaveBeenCalled();
+      });
+
+      it("moves the edge by the arrow keys, in the direction the edge goes", async () => {
+        const { user, onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        act(() => handle.focus());
+        await user.keyboard("{ArrowLeft}");
+
+        expect(width()).toBe("368px");
+        expect(onNotesPanelWidthChange).toHaveBeenLastCalledWith(368);
+
+        await user.keyboard("{ArrowRight}{ArrowRight}");
+
+        expect(width()).toBe("336px");
+        expect(onNotesPanelWidthChange).toHaveBeenLastCalledWith(336);
+      });
+
+      it("leaves the width alone for a key that is not an arrow", async () => {
+        const { user, onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        act(() => handle.focus());
+        await user.keyboard("{ArrowUp}{Enter}a");
+
+        expect(width()).toBe("352px");
+        expect(onNotesPanelWidthChange).not.toHaveBeenCalled();
+      });
+
+      it("keeps an arrow key on the handle from turning the page", async () => {
+        const { user } = await openNotes();
+        const { handle } = notesPanelAt(1000);
+
+        act(() => handle.focus());
+        await user.keyboard("{ArrowRight}");
+
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
     });
 
     describe("章立て自動挿入・カーソル追従 (issue #46)", () => {

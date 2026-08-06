@@ -29,6 +29,16 @@ const MAX_LANGUAGE_TAG_LEN: usize = 35;
 /// pasted paragraph out of the file.
 const MAX_MODEL_ID_LEN: usize = 100;
 
+/// How wide the notes panel may be dragged (issue #76), in CSS px. The minimum
+/// is about what a paragraph needs to still read as one; the maximum leaves
+/// enough of the window for the page beside it.
+pub const MIN_NOTES_PANEL_WIDTH: u32 = 240;
+pub const MAX_NOTES_PANEL_WIDTH: u32 = 720;
+
+/// What the panel was fixed at before it could be resized (22rem at 16px/rem),
+/// so a reader who never drags it sees no change.
+pub const DEFAULT_NOTES_PANEL_WIDTH: u32 = 352;
+
 #[derive(Debug, Serialize)]
 #[serde(
     tag = "kind",
@@ -150,6 +160,8 @@ pub struct Settings {
     pub notes_outline_insert: bool,
     /// Move the notes cursor to the heading of the section on screen (#46).
     pub notes_outline_follow: bool,
+    /// Width of the notes panel in CSS px (#76), as the reader last dragged it.
+    pub notes_panel_width: u32,
 }
 
 impl Default for Settings {
@@ -161,6 +173,7 @@ impl Default for Settings {
             translation: TranslationSettings::default(),
             notes_outline_insert: true,
             notes_outline_follow: true,
+            notes_panel_width: DEFAULT_NOTES_PANEL_WIDTH,
         }
     }
 }
@@ -195,6 +208,15 @@ fn model_id(raw: &str) -> Option<String> {
         return None;
     }
     Some(id.to_string())
+}
+
+/// The notes panel width to actually use: whole pixels, inside the range the
+/// handle can be dragged over. Out of range is clamped rather than refused —
+/// a hand-edited 10000 says "as wide as it goes", and dropping back to the
+/// default would look like the file was ignored.
+fn notes_panel_width(raw: f64) -> u32 {
+    raw.round()
+        .clamp(MIN_NOTES_PANEL_WIDTH as f64, MAX_NOTES_PANEL_WIDTH as f64) as u32
 }
 
 /// Keeps the entries that name a provider this build knows and carry a usable
@@ -242,6 +264,11 @@ pub fn parse_settings(raw: &str) -> Settings {
             .unwrap_or(defaults.notes_outline_insert),
         notes_outline_follow: parsed(value_at(root.as_ref(), "notesOutlineFollow"))
             .unwrap_or(defaults.notes_outline_follow),
+        // Read as a float so a width written as `352.0` still counts as one;
+        // anything that is not a JSON number at all falls back to the default.
+        notes_panel_width: parsed::<f64>(value_at(root.as_ref(), "notesPanelWidth"))
+            .map(notes_panel_width)
+            .unwrap_or(defaults.notes_panel_width),
     }
 }
 
@@ -262,6 +289,7 @@ pub fn normalize(settings: &Settings) -> Settings {
         },
         notes_outline_insert: settings.notes_outline_insert,
         notes_outline_follow: settings.notes_outline_follow,
+        notes_panel_width: notes_panel_width(settings.notes_panel_width as f64),
     }
 }
 
@@ -352,6 +380,7 @@ mod tests {
             },
             notes_outline_insert: false,
             notes_outline_follow: false,
+            notes_panel_width: 480,
         }
     }
 
@@ -367,6 +396,81 @@ mod tests {
         assert!(settings.translation.models.is_empty());
         assert!(settings.notes_outline_insert);
         assert!(settings.notes_outline_follow);
+        assert_eq!(settings.notes_panel_width, DEFAULT_NOTES_PANEL_WIDTH);
+    }
+
+    #[test]
+    fn parse_keeps_a_notes_panel_width_inside_the_range() {
+        for (raw, expected) in [
+            (r#"{ "notesPanelWidth": 480 }"#, 480),
+            // The ends of the range are usable widths, not rejected ones.
+            (r#"{ "notesPanelWidth": 240 }"#, MIN_NOTES_PANEL_WIDTH),
+            (r#"{ "notesPanelWidth": 720 }"#, MAX_NOTES_PANEL_WIDTH),
+            // Written back by a build (or a hand) that used fractions.
+            (r#"{ "notesPanelWidth": 480.4 }"#, 480),
+            (r#"{ "notesPanelWidth": 480.5 }"#, 481),
+        ] {
+            assert_eq!(
+                parse_settings(raw).notes_panel_width,
+                expected,
+                "raw: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_clamps_a_notes_panel_width_outside_the_range() {
+        // Clamped rather than dropped: a hand-edited extreme means "as wide (or
+        // narrow) as it goes", and the default would look like the file was
+        // ignored.
+        for (raw, expected) in [
+            (r#"{ "notesPanelWidth": 239 }"#, MIN_NOTES_PANEL_WIDTH),
+            (r#"{ "notesPanelWidth": 0 }"#, MIN_NOTES_PANEL_WIDTH),
+            (r#"{ "notesPanelWidth": -100 }"#, MIN_NOTES_PANEL_WIDTH),
+            (r#"{ "notesPanelWidth": 721 }"#, MAX_NOTES_PANEL_WIDTH),
+            (r#"{ "notesPanelWidth": 10000 }"#, MAX_NOTES_PANEL_WIDTH),
+        ] {
+            assert_eq!(
+                parse_settings(raw).notes_panel_width,
+                expected,
+                "raw: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_falls_back_to_the_default_notes_panel_width_for_a_non_number() {
+        for raw in [
+            r#"{ "notesPanelWidth": "400" }"#,
+            r#"{ "notesPanelWidth": true }"#,
+            r#"{ "notesPanelWidth": null }"#,
+            r#"{ "notesPanelWidth": [400] }"#,
+            r#"{}"#,
+        ] {
+            assert_eq!(
+                parse_settings(raw).notes_panel_width,
+                DEFAULT_NOTES_PANEL_WIDTH,
+                "raw: {raw}",
+            );
+        }
+    }
+
+    #[test]
+    fn save_clamps_a_notes_panel_width_it_was_handed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+
+        let stored = save_settings_to(
+            &path,
+            &Settings {
+                notes_panel_width: 5000,
+                ..sample()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(stored.notes_panel_width, MAX_NOTES_PANEL_WIDTH);
+        assert_eq!(load_settings_from(&path).unwrap(), stored);
     }
 
     #[test]
