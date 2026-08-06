@@ -75,7 +75,6 @@ import {
   stepForArrowKey,
   toDomIndex,
   visualPageOrder,
-  wheelScrollDelta,
   type Binding,
   type ViewMode,
 } from "./spreads";
@@ -105,6 +104,30 @@ import {
  * fighting back indefinitely could not turn this into a busy loop.
  */
 const MAX_RESNAP_RECOVERY_ATTEMPTS = 8;
+
+/**
+ * Accumulated vertical wheel delta that turns one page (issue #68 / #71).
+ * Fit zoom makes every spread box exactly as wide as `.scroller`'s
+ * viewport, so `scroll-snap-type: x mandatory` (with `snap-stop: always`)
+ * leaves no free range *inside* a box for a raw pixel `scrollBy` to move
+ * through — the engine snaps straight back on every single wheel event,
+ * which is what made wheel/trackpad paging go dead (and, at a fast fling,
+ * made the view flash black turning several spread widths in one jump —
+ * issue #71). Turning by whole spreads instead of pixels sidesteps the
+ * conflict by construction. 120 matches a classic mouse wheel's one detent
+ * (`deltaY` of ±120) — one notch, one page; a trackpad's short flick crosses
+ * it in one or two events, and a strong fling accumulates past it several
+ * times over, so a hard swipe still turns multiple pages.
+ */
+const TURN_THRESHOLD = 120;
+
+/**
+ * A vertical wheel gesture idle for longer than this (issue #68 / #71) is
+ * treated as a new one: its accumulated delta starts over, and so does the
+ * running target spread it was walking towards. Keeps a stray, long-delayed
+ * wheel tick from continuing a page-turn the reader had already stopped.
+ */
+const TURN_RESET_MS = 300;
 
 /** Spreads rendered on each side of the visible one. */
 const OVERSCAN = 1;
@@ -389,6 +412,20 @@ export function PdfViewer({
    * that gesture for something else.
    */
   const pinchOccurredRef = useRef(false);
+  /**
+   * Running state for turning pages on a vertical wheel/trackpad gesture
+   * (issue #68 / #71; see `TURN_THRESHOLD`). `targetIndex` is the reader's
+   * own running count of the spread a run of turns is walking towards —
+   * `spreadIndexRef` only updates after commit, too slow for several turns
+   * fired within one frame — seeded from `spreadIndexRef` whenever the
+   * accumulation resets (a direction flip, or `TURN_RESET_MS` of silence).
+   */
+  const wheelTurnRef = useRef({
+    accum: 0,
+    direction: 0 as -1 | 0 | 1,
+    lastEventAt: 0,
+    targetIndex: 0,
+  });
   /** Aborts an in-flight region render when the reader leaves the document. */
   const clipAbortRef = useRef<AbortController | null>(null);
   /** The latest `createClip`, for the same reason as `dragRef`. */
@@ -425,6 +462,19 @@ export function PdfViewer({
    * budget of recovery attempts.
    */
   const resnapRecoveryAttemptsRef = useRef(0);
+  /**
+   * Whether the current `pendingDomIndexRef` came from a resize-transition
+   * effect (the reposition layout effect, or the panel-open stamp effect —
+   * both `behavior: "auto"`, no animation to interrupt) rather than from an
+   * in-progress smooth scroll (`goToSpread`'s default). Only the former
+   * should have `handleScroll` re-issue `scrollTo` on a mismatch (issue #68
+   * review): a smooth `goToSpread` scroll legitimately passes through
+   * intermediate spreads on its way to its target, each firing its own
+   * `scroll` event with `nearest !== pending` — re-issuing `scrollTo` there
+   * would cut the animation short into an instant jump on its very first
+   * frame. Set at every place `pendingDomIndexRef` is (re)stamped.
+   */
+  const pendingSelfHealRef = useRef(false);
   const scrollFrameRef = useRef<number | null>(null);
   /** Which way the reader is scrolling, updated alongside `scrollLeft` in
    * {@link handleScroll}; read (not depended on) by the prefetch effect. */
@@ -468,9 +518,7 @@ export function PdfViewer({
     total,
   );
   const spreadIndexRef = useRef(spreadIndex);
-  // Read inside the wheel listener so it never has to be re-registered.
-  const bindingRef = useRef(binding);
-  // Read inside the pinch listener, for the same reason.
+  // Read inside the pinch listener, so it never has to be re-registered.
   const zoomRef = useRef(zoom);
   /** A pinch starting while a clip drag is being made would fight it for the
    * same two fingers; read inside the pointerdown listener to keep it from
@@ -494,7 +542,6 @@ export function PdfViewer({
   // reposition effect scroll back to a spread that is already stale.
   useLayoutEffect(() => {
     spreadIndexRef.current = spreadIndex;
-    bindingRef.current = binding;
     zoomRef.current = zoom;
     clipModeRef.current = clipMode;
   });
@@ -734,6 +781,12 @@ export function PdfViewer({
       const domIndex = toDomIndex(next, total, binding);
       pendingDomIndexRef.current = domIndex;
       resnapRecoveryAttemptsRef.current = 0;
+      // `"auto"` callers (issue #43's initial-page jump, the resize
+      // effects below) have nothing animated to protect, so `handleScroll`
+      // may fight back on their behalf; a `"smooth"` scroll legitimately
+      // passes through other spreads on the way to this one, and must not
+      // have that self-heal cut the animation short.
+      pendingSelfHealRef.current = behavior === "auto";
       scrollerRef.current?.scrollTo({
         left: scrollOffsetForItem(layout, domIndex, viewportWidth),
         behavior,
@@ -766,6 +819,7 @@ export function PdfViewer({
     const domIndex = toDomIndex(spreadIndexRef.current, total, binding);
     pendingDomIndexRef.current = domIndex;
     resnapRecoveryAttemptsRef.current = 0;
+    pendingSelfHealRef.current = true;
     scroller.scrollTo({
       left: scrollOffsetForItem(layout, domIndex, viewportWidth),
       behavior: "auto",
@@ -796,6 +850,7 @@ export function PdfViewer({
       binding,
     );
     resnapRecoveryAttemptsRef.current = 0;
+    pendingSelfHealRef.current = true;
   }, [notesOpen, highlightsOpen, sidebarOpen, total, binding]);
 
   /**
@@ -875,7 +930,14 @@ export function PdfViewer({
           // `scrollTo` here fights back the same way: real telemetry shows
           // this settling within a single re-issue, and the attempt cap
           // above only guards against a browser that kept fighting back.
+          // Gated on `pendingSelfHealRef`: a mismatch here is also the
+          // normal, expected shape of an in-progress *smooth* `goToSpread`
+          // scroll passing through intermediate spreads — re-issuing
+          // `scrollTo` there would abort that animation into an instant
+          // jump on its first intermediate frame, which is not this fix's
+          // job (see `pendingSelfHealRef`'s own comment).
           if (
+            pendingSelfHealRef.current &&
             resnapRecoveryAttemptsRef.current < MAX_RESNAP_RECOVERY_ATTEMPTS
           ) {
             resnapRecoveryAttemptsRef.current += 1;
@@ -1043,11 +1105,49 @@ export function PdfViewer({
       }
       if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
         event.preventDefault();
-        cancelPendingScroll();
-        scroller.scrollBy({
-          left: wheelScrollDelta(event.deltaY, bindingRef.current),
-          behavior: "auto",
-        });
+        // Turn by whole spreads instead of scrolling by the raw pixel delta
+        // (issue #68 / #71) — see `TURN_THRESHOLD`'s own comment for why a
+        // `scrollBy` no longer works here at all now that fit zoom makes
+        // every spread box exactly the viewport's width.
+        //
+        // Deliberately does *not* `cancelPendingScroll()` here, unlike every
+        // other gesture start in this file (the horizontal branch below
+        // included): a turn's own `goToSpread` call sets the very pending
+        // target this handler is walking towards, and the next wheel event
+        // in the same fling must not kill that smooth scroll out from under
+        // itself before it lands.
+        if (Number.isFinite(event.deltaY) && event.deltaY !== 0) {
+          const turn = wheelTurnRef.current;
+          const direction = Math.sign(event.deltaY) as -1 | 1;
+          const now = performance.now();
+          // A reversed direction or a long-enough pause reads as a new
+          // gesture: start the accumulator (and the running target it
+          // drives) over, seeded from wherever the reader actually is now.
+          if (
+            direction !== turn.direction ||
+            now - turn.lastEventAt > TURN_RESET_MS
+          ) {
+            turn.accum = 0;
+            turn.direction = direction;
+            turn.targetIndex = spreadIndexRef.current;
+          }
+          turn.lastEventAt = now;
+          turn.accum += event.deltaY;
+          // Down always reads on, regardless of binding: `goToSpread` ->
+          // `toDomIndex` already accounts for a right-bound book's reversed
+          // DOM order, so the spread-index space walked here never itself
+          // flips. Subtracting (rather than zeroing) the threshold each turn
+          // lets one outsized delta — a hard fling — turn several pages at
+          // once instead of clipping to one.
+          while (Math.abs(turn.accum) >= TURN_THRESHOLD) {
+            turn.accum -= TURN_THRESHOLD * direction;
+            turn.targetIndex = clampSpreadIndex(
+              turn.targetIndex + direction,
+              total,
+            );
+            goToSpread(turn.targetIndex);
+          }
+        }
       } else if (event.deltaX !== 0) {
         cancelPendingScroll();
       }
@@ -1167,7 +1267,7 @@ export function PdfViewer({
       window.removeEventListener("pointerup", forgetPointerDown);
       window.removeEventListener("pointercancel", forgetPointerDown);
     };
-  }, [cancelPendingScroll]);
+  }, [cancelPendingScroll, goToSpread, total]);
 
   /**
    * A finished pointer gesture either carries a text selection (offer to

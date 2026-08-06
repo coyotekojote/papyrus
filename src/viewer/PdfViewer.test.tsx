@@ -782,21 +782,36 @@ describe("PdfViewer", () => {
         scrollToSpy = undefined;
       });
 
-      it("re-issues scrollTo at the pending spread's offset and leaves currentPage alone", async () => {
-        const scrollToSpy = spyOnScrollTo();
+      /**
+       * Settles on page 2 (domIndex 1) and then re-stamps a pending target
+       * there through the panel-open path (`notesOpen`'s stamp effect,
+       * `behavior: "auto"`) rather than through a smooth `goToSpread` —
+       * `pendingSelfHealRef` only enables the recovery these tests are about
+       * for the former (issue #68 review). The `ArrowRight` used to get to
+       * page 2 sets its own, smooth-flagged pending target first; settling
+       * it for real (rather than leaving it hanging) keeps that from being
+       * the pending target these tests end up exercising instead.
+       */
+      async function pendingViaPanelOpen() {
         renderViewer(PAGE_COUNT);
         resizeViewport(800);
-        // Settle on domIndex 0 for real, clearing the pending guard the
-        // initial resize set, so the pending target below is unambiguous.
         await scrollTo(0);
         expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
 
-        // Navigating sets a fresh pending target (domIndex 1) and its own
-        // `scrollTo`; `currentPage` moves optimistically, ahead of the
-        // scroll actually landing there.
         const user = userEvent.setup();
         await user.keyboard("{ArrowRight}");
+        await scrollTo(1 * 800);
         expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // Opening the notes panel re-stamps pending at domIndex 1 (where the
+        // reader now actually is) through the `auto`/self-heal-eligible path.
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        return user;
+      }
+
+      it("re-issues scrollTo at the pending spread's offset and leaves currentPage alone", async () => {
+        const scrollToSpy = spyOnScrollTo();
+        await pendingViaPanelOpen();
         scrollToSpy.mockClear();
 
         // A scroll landing on domIndex 3's slot instead — standing in for
@@ -817,13 +832,7 @@ describe("PdfViewer", () => {
 
       it("stops re-issuing scrollTo once the recovery cap is reached, without corrupting currentPage", async () => {
         const scrollToSpy = spyOnScrollTo();
-        renderViewer(PAGE_COUNT);
-        resizeViewport(800);
-        await scrollTo(0);
-
-        const user = userEvent.setup();
-        await user.keyboard("{ArrowRight}");
-        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        await pendingViaPanelOpen();
         scrollToSpy.mockClear();
 
         // A browser that kept re-snapping away from the pending spread on
@@ -838,6 +847,33 @@ describe("PdfViewer", () => {
         expect(scrollToSpy).toHaveBeenCalledTimes(8);
         // Giving up on re-issuing scrollTo must not also give up on the
         // pending guard: currentPage still must not have been corrupted.
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+      });
+
+      it("does not re-issue scrollTo for an in-progress smooth goToSpread scroll", async () => {
+        const scrollToSpy = spyOnScrollTo();
+        renderViewer(PAGE_COUNT);
+        resizeViewport(800);
+        await scrollTo(0);
+        expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+        // `ArrowRight` is a smooth `goToSpread`; its own pending target is
+        // *not* self-heal-eligible (`pendingSelfHealRef` stays false), since
+        // a real smooth scroll legitimately passes through other spreads —
+        // each firing its own `scroll` event with `nearest !== pending` — on
+        // its way to landing.
+        const user = userEvent.setup();
+        await user.keyboard("{ArrowRight}");
+        expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+        scrollToSpy.mockClear();
+
+        // Stands in for an intermediate frame of that smooth animation,
+        // still short of domIndex 1.
+        await scrollTo(3 * 800);
+
+        expect(scrollToSpy).not.toHaveBeenCalled();
+        // The pending guard on its own still keeps currentPage from being
+        // dragged along to this intermediate position.
         expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
       });
     });
@@ -1257,28 +1293,102 @@ describe("PdfViewer", () => {
   });
 
   describe("wheel scrolling", () => {
-    const scrollBy = vi.spyOn(Element.prototype, "scrollBy");
+    // Fit zoom makes every spread box exactly as wide as the viewport
+    // (issue #68), which leaves `scroll-snap-type: x mandatory` no free
+    // range inside a box for a raw pixel `scrollBy` to move through — the
+    // engine snaps straight back on every event. Wheel/trackpad paging turns
+    // whole spreads instead (issue #68 / #71, `TURN_THRESHOLD`), so these
+    // assert against the page indicator rather than a `scrollBy` call.
 
-    afterEach(() => scrollBy.mockClear());
-
-    it("scrolls forward on a downward wheel in a left-bound book", () => {
+    it("turns the page after one classic wheel notch (deltaY 120)", () => {
       renderViewer();
 
       fireEvent.wheel(scroller(), { deltaY: 120, deltaX: 0 });
 
-      expect(scrollBy).toHaveBeenCalledWith({ left: 120, behavior: "auto" });
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
     });
 
     it("still reads forward on a downward wheel once right-bound", async () => {
       const { user } = renderViewer();
       await user.click(screen.getByRole("button", { name: "左綴じ" }));
-      scrollBy.mockClear();
 
       fireEvent.wheel(scroller(), { deltaY: 120, deltaX: 0 });
 
-      // Right-bound spreads are laid out reversed, so reading on means moving
-      // towards a smaller scroll offset.
-      expect(scrollBy).toHaveBeenCalledWith({ left: -120, behavior: "auto" });
+      // "Down" always means "read on", regardless of binding: `goToSpread`
+      // -> `toDomIndex` is what flips the physical scroll direction for a
+      // right-bound book, so the wheel handler's own turn direction never
+      // has to.
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("does not turn the page before the threshold is reached", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 60, deltaX: 0 });
+
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("turns the page once several small deltas accumulate past the threshold", () => {
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 60, deltaX: 0 });
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      fireEvent.wheel(scroller(), { deltaY: 60, deltaX: 0 });
+
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("turns several pages from one outsized delta, e.g. a hard fling", () => {
+      renderViewer(PAGE_COUNT);
+
+      // 2.5 notches' worth in one event: two full turns (240 consumed),
+      // leaving 60 short of a third.
+      fireEvent.wheel(scroller(), { deltaY: 300, deltaX: 0 });
+
+      expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("resets the accumulator on a direction reversal", () => {
+      renderViewer();
+
+      // One notch and change forward: lands on page 2, with 80 left over.
+      fireEvent.wheel(scroller(), { deltaY: 200, deltaX: 0 });
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      // Reverses direction; without a reset this would sum with the 80 left
+      // over (-30 + 80 = 50, still short) rather than starting over at -30 —
+      // either way short of the threshold here, so this alone only pins down
+      // that reversing does not turn a page it should not yet.
+      fireEvent.wheel(scroller(), { deltaY: -30, deltaX: 0 });
+      expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      // Enough more in the same (reversed) direction to cross the threshold
+      // from the reset accumulator (-30 + -100 = -130): had the leftover 80
+      // instead carried over un-reset, -30 + 80 + -100 = -50 would still be
+      // short, and this would still show page 2.
+      fireEvent.wheel(scroller(), { deltaY: -100, deltaX: 0 });
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+    });
+
+    it("resets the accumulator after a pause longer than the reset timeout", () => {
+      const now = vi.spyOn(performance, "now");
+      now.mockReturnValue(0);
+      renderViewer();
+
+      fireEvent.wheel(scroller(), { deltaY: 100, deltaX: 0 });
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      // Longer than TURN_RESET_MS (300ms) since the event above.
+      now.mockReturnValue(1000);
+      fireEvent.wheel(scroller(), { deltaY: 100, deltaX: 0 });
+
+      // Had the accumulator survived the pause, 100 + 100 would already have
+      // crossed the threshold and turned a page.
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
+
+      now.mockRestore();
     });
 
     it("leaves a horizontal wheel to the browser", () => {
@@ -1286,7 +1396,7 @@ describe("PdfViewer", () => {
 
       fireEvent.wheel(scroller(), { deltaY: 0, deltaX: 120 });
 
-      expect(scrollBy).not.toHaveBeenCalled();
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
     });
 
     it("zooms instead of scrolling when the wheel carries ctrl", () => {
@@ -1294,7 +1404,7 @@ describe("PdfViewer", () => {
 
       fireEvent.wheel(scroller(), { deltaY: -100, ctrlKey: true });
 
-      expect(scrollBy).not.toHaveBeenCalled();
+      expect(screen.getByText(`1 / ${PAGE_COUNT}`)).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "100%" })).toBeNull();
     });
 
@@ -1320,7 +1430,7 @@ describe("PdfViewer", () => {
     });
   });
 
-  it("lets the page indicator recover when a smooth scroll is interrupted", async () => {
+  it("lets the page indicator recover when an in-flight scroll is interrupted", async () => {
     const { user } = renderViewer();
 
     // Navigate away; jsdom performs no actual scrolling, so the viewer is still
@@ -1328,8 +1438,13 @@ describe("PdfViewer", () => {
     await user.keyboard("{ArrowRight}");
     expect(screen.getByText(`2 / ${PAGE_COUNT}`)).toBeInTheDocument();
 
-    // The user grabs the wheel mid-flight, abandoning that scroll.
-    fireEvent.wheel(scroller(), { deltaY: 10, deltaX: 0 });
+    // A horizontal wheel/trackpad pan grabs the scroller directly and
+    // abandons the pending scroll, the same as a pointer-down does — unlike
+    // a *vertical* wheel, which deliberately leaves an in-progress page turn
+    // alone (issue #68 / #71: it may well be that turn's own pending target,
+    // and the next tick of the same fling must not cancel it out from under
+    // itself).
+    fireEvent.wheel(scroller(), { deltaY: 0, deltaX: 10 });
     fireEvent.scroll(scroller());
     await flushScroll();
 

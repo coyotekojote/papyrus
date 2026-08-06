@@ -89,15 +89,3 @@ export function toDomIndex(
 ): number {
   return binding === "right" ? total - 1 - spreadIndex : spreadIndex;
 }
-
-/**
- * Converts a vertical wheel delta into a horizontal scroll delta.
- *
- * Scrolling the wheel down always means "read on". A right-bound book is laid
- * out with its spreads reversed, so reading on there is a move towards a
- * *smaller* scroll offset — the delta has to flip with the binding.
- */
-export function wheelScrollDelta(deltaY: number, binding: Binding): number {
-  if (!Number.isFinite(deltaY)) return 0;
-  return binding === "right" ? -deltaY : deltaY;
-}

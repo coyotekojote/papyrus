@@ -7,7 +7,6 @@ import {
   stepForArrowKey,
   toDomIndex,
   visualPageOrder,
-  wheelScrollDelta,
 } from "./spreads";
 
 describe("buildSpreads", () => {
@@ -142,28 +141,5 @@ describe("toDomIndex", () => {
         expect(toDomIndex(toDomIndex(i, 5, binding), 5, binding)).toBe(i);
       }
     }
-  });
-});
-
-describe("wheelScrollDelta", () => {
-  it("scrolls forward on a downward wheel in a left-bound book", () => {
-    expect(wheelScrollDelta(120, "left")).toBe(120);
-    expect(wheelScrollDelta(-120, "left")).toBe(-120);
-  });
-
-  it("flips the direction for a right-bound book, so wheel down still reads on", () => {
-    expect(wheelScrollDelta(120, "right")).toBe(-120);
-    expect(wheelScrollDelta(-120, "right")).toBe(120);
-  });
-
-  it("moves the same distance in either binding", () => {
-    expect(Math.abs(wheelScrollDelta(37, "right"))).toBe(
-      Math.abs(wheelScrollDelta(37, "left")),
-    );
-  });
-
-  it("treats a non-finite delta as no movement", () => {
-    expect(wheelScrollDelta(Number.NaN, "left")).toBe(0);
-    expect(wheelScrollDelta(Number.POSITIVE_INFINITY, "right")).toBe(0);
   });
 });
