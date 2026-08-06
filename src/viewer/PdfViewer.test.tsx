@@ -236,7 +236,10 @@ async function flushScroll() {
 interface ViewerDefaults {
   binding?: Binding;
   viewMode?: ViewMode;
-  /** Issue #46; left at the component defaults (both on) unless overridden. */
+  /**
+   * Issue #46; left at the component defaults unless overridden —
+   * `notesOutlineInsert` on, `notesOutlineFollow` off (issue #74).
+   */
   notesOutlineInsert?: boolean;
   notesOutlineFollow?: boolean;
 }
@@ -2489,7 +2492,11 @@ describe("PdfViewer", () => {
           content: "",
           modifiedAtMs: 7,
         });
-        const { user } = renderViewer(PAGE_COUNT, notesOutline);
+        // Follow defaults to off (issue #74); this describe block is
+        // specifically about it, so it opts in explicitly.
+        const { user } = renderViewer(PAGE_COUNT, notesOutline, {
+          notesOutlineFollow: true,
+        });
         await user.click(screen.getByRole("button", { name: "メモ" }));
         const editor = (await screen.findByRole("textbox", {
           name: "メモ (markdown)",
@@ -2506,6 +2513,38 @@ describe("PdfViewer", () => {
           expect(editor.selectionStart).toBe(expected);
         });
       });
+
+      it("leaves the notes cursor alone when follow is off (the default), paired with the test above", async () => {
+        vi.mocked(loadNotes).mockResolvedValue({
+          content: "",
+          modifiedAtMs: 7,
+        });
+        // No `notesOutlineFollow` override here: exercises the default
+        // (issue #74).
+        const { user } = renderViewer(PAGE_COUNT, notesOutline);
+        await user.click(screen.getByRole("button", { name: "メモ" }));
+        const editor = (await screen.findByRole("textbox", {
+          name: "メモ (markdown)",
+        })) as HTMLTextAreaElement;
+        await waitFor(() =>
+          expect(editor).toHaveValue("# 序章\n\n# 本論\n\n## 後半\n\n# 付録\n"),
+        );
+        const before = editor.selectionStart;
+
+        await user.click(screen.getByRole("button", { name: "目次" }));
+        await user.click(screen.getByRole("button", { name: "本論3" }));
+
+        // Waits for the navigation itself to have settled — and thus given
+        // an (absent) follow effect every chance to have run — before
+        // asserting nothing moved; checking immediately would risk a false
+        // pass from asserting too early rather than from follow really
+        // being off.
+        await waitFor(() =>
+          expect(screen.getByText(`3 / ${PAGE_COUNT}`)).toBeInTheDocument(),
+        );
+        expect(editor.selectionStart).toBe(before);
+      });
+
       it("follows to a section whose title has a line break, matching how it was written as a heading", async () => {
         // A bookmark title straight from a PDF's outline dictionary can carry
         // a line break; `formatOutlineHeadings` collapses it to a space when
@@ -2518,7 +2557,10 @@ describe("PdfViewer", () => {
           content: "",
           modifiedAtMs: 7,
         });
-        const { user } = renderViewer(PAGE_COUNT, wrapped);
+        // Follow defaults to off (issue #74); opted in explicitly, as above.
+        const { user } = renderViewer(PAGE_COUNT, wrapped, {
+          notesOutlineFollow: true,
+        });
         await user.click(screen.getByRole("button", { name: "メモ" }));
         const editor = (await screen.findByRole("textbox", {
           name: "メモ (markdown)",
@@ -2536,7 +2578,10 @@ describe("PdfViewer", () => {
           content: "",
           modifiedAtMs: 7,
         });
-        const { user } = renderViewer(PAGE_COUNT, blank);
+        // Follow defaults to off (issue #74); opted in explicitly, as above.
+        const { user } = renderViewer(PAGE_COUNT, blank, {
+          notesOutlineFollow: true,
+        });
         await user.click(screen.getByRole("button", { name: "メモ" }));
         const editor = (await screen.findByRole("textbox", {
           name: "メモ (markdown)",

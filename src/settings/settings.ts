@@ -37,7 +37,13 @@ export interface Settings {
   translation: TranslationSettings;
   /** Insert the PDF's outline as markdown headings into an empty note (#46). */
   notesOutlineInsert: boolean;
-  /** Move the notes cursor to the heading of the section on screen (#46). */
+  /**
+   * Move the notes cursor to the heading of the section on screen (#46).
+   * Matching is by exact title string against the PDF's own outline, which
+   * misleads more than it helps once that outline is coarse or the note's
+   * headings have since been edited — off by default (issue #74), opt-in
+   * once the reader has confirmed the outline actually lines up.
+   */
   notesOutlineFollow: boolean;
 }
 
@@ -127,7 +133,8 @@ export function defaultSettings(): Settings {
     defaultViewMode: "single",
     translation: { provider: "claude", targetLanguage: "ja", models: {} },
     notesOutlineInsert: true,
-    notesOutlineFollow: true,
+    // Off by default (issue #74): see `notesOutlineFollow`'s own doc comment.
+    notesOutlineFollow: false,
   };
 }
 

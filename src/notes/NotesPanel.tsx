@@ -1,9 +1,17 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { Clip } from "../files/sidecar";
 import { detectDictationPlatform, dictationHint } from "./dictation";
 import { scrollOffsetIntoView } from "./follow-scroll";
 import { MarkdownView } from "./MarkdownView";
 import { findHeadingOffset } from "./outline-headings";
+import { scrollPastEndPadding } from "./scroll-past-end";
 import { useClipImages } from "./use-clip-images";
 import type { NotesStatus } from "./use-notes";
 
@@ -147,6 +155,47 @@ export function NotesPanel({
     textarea.setSelectionRange(offset, offset);
     scrollOffsetIntoView(textarea, offset);
   }, [followHeading, mode, content, editorFocused]);
+
+  // Keeps the editor scrollable past its own last line (issue #74; see
+  // scroll-past-end.ts for the full derivation). Without this, a followed
+  // heading that lands on or near the textarea's last line asks for a
+  // `scrollTop` the browser clamps below — the note simply runs out of
+  // content before the target scroll position does, so the jump above does
+  // nothing at all, silently (an unfocused textarea's caret is invisible, so
+  // there is no visual sign the follow was even attempted).
+  //
+  // A layout effect applies the padding before paint, so a freshly mounted
+  // (or just-switched-back-to-edit) textarea never briefly renders with its
+  // designed 0.6rem bottom padding first. The `ResizeObserver` then keeps it
+  // current as the panel's own height changes (a window resize, the compact
+  // layout's breakpoint) — `clientHeight` is the only input here that
+  // changes after mount; `lineHeight`/`paddingTop` come from CSS that does
+  // not change at runtime, and are re-read anyway since doing so costs
+  // nothing extra. Re-runs on `mode`: switching to preview and back mounts a
+  // *new* textarea element, which this must reattach to.
+  useLayoutEffect(() => {
+    if (mode !== "edit") return;
+    const textarea = editorRef.current;
+    if (!textarea) return;
+    const view = textarea.ownerDocument.defaultView;
+    if (!view) return;
+
+    const applyPadding = () => {
+      const computed = view.getComputedStyle(textarea);
+      const lineHeight = Number.parseFloat(computed.lineHeight);
+      const paddingTop = Number.parseFloat(computed.paddingTop) || 0;
+      textarea.style.paddingBottom = `${scrollPastEndPadding(
+        textarea.clientHeight,
+        lineHeight,
+        paddingTop,
+      )}px`;
+    };
+
+    applyPadding();
+    const observer = new ResizeObserver(applyPadding);
+    observer.observe(textarea);
+    return () => observer.disconnect();
+  }, [mode]);
 
   return (
     <div className="notes">
