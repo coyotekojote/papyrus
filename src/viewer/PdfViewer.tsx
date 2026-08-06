@@ -1760,6 +1760,12 @@ export function PdfViewer({
    * Ends the drag and persists what it landed on — including on
    * `pointercancel`, where the panel keeps the width it had reached and the
    * setting would otherwise disagree with what is on screen.
+   *
+   * A release is measured from the event itself: that is where the reader let
+   * go. A cancel is not — a cancelled pointer is allowed to report (0, 0),
+   * which would read as a drag to the far left and store the panel at its
+   * widest. The last position an actual move reported is what the panel is
+   * already showing, so that is what the cancel keeps.
    */
   const endNotesResize = useCallback(
     (event: ReactPointerEvent) => {
@@ -1772,7 +1778,9 @@ export function PdfViewer({
         notesResizeFrameRef.current = null;
       }
       const width = notesWidthFromPointer(
-        event.clientX,
+        event.type === "pointercancel"
+          ? notesPointerXRef.current
+          : event.clientX,
         resize.panelRight,
         window.innerWidth,
       );

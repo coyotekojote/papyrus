@@ -2491,15 +2491,30 @@ describe("PdfViewer", () => {
         expect(onNotesPanelWidthChange).toHaveBeenCalledWith(240);
       });
 
-      it("keeps the width a cancelled drag reached, rather than losing it", async () => {
+      it("keeps the width a cancelled drag reached, not where the cancel says the pointer was", async () => {
         const { onNotesPanelWidthChange } = await openNotes();
         const { handle, width } = notesPanelAt(1000);
 
         fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
-        fireEvent.pointerCancel(handle, { pointerId: 1, clientX: 600 });
+        fireEvent.pointerMove(handle, { pointerId: 1, clientX: 600 });
+        // A cancelled pointer is allowed to come back at (0, 0). Taken at
+        // face value that reads as a drag to the far left, and the panel
+        // would be stored at its widest instead of the 400px on screen.
+        fireEvent.pointerCancel(handle, { pointerId: 1, clientX: 0 });
 
         expect(width()).toBe("400px");
         expect(onNotesPanelWidthChange).toHaveBeenCalledWith(400);
+      });
+
+      it("keeps the width it started at when a drag is cancelled before it moves", async () => {
+        const { onNotesPanelWidthChange } = await openNotes();
+        const { handle, width } = notesPanelAt(1000);
+
+        fireEvent.pointerDown(handle, { pointerId: 1, clientX: 648 });
+        fireEvent.pointerCancel(handle, { pointerId: 1, clientX: 0 });
+
+        expect(width()).toBe("352px");
+        expect(onNotesPanelWidthChange).toHaveBeenCalledWith(352);
       });
 
       it("ignores a pointer that is not the one that started the drag", async () => {

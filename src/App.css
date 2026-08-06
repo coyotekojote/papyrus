@@ -1381,6 +1381,11 @@ body {
   }
 
   .sidebar.sidebar--notes {
+    /* Repeated from `.sidebar` above, which the notes panel's own
+       `position: relative` (it positions the drag handle) would otherwise
+       outrank on specificity — dropping the panel out of the overlay and back
+       into the row it is supposed to be covering. */
+    position: absolute;
     /* The panel covers the pages here rather than sharing the row with them,
        so the drag is capped by the window itself, not by what it leaves
        beside it. */
