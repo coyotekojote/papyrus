@@ -725,8 +725,38 @@ body {
 /* ---------- notes panel ---------- */
 
 .sidebar.sidebar--notes {
-  /* Wide enough to write a paragraph in, not so wide it crowds the page. */
-  width: 22rem;
+  /* The width the reader dragged the edge to (issue #76), falling back to what
+     the panel was fixed at before it could be resized: wide enough to write a
+     paragraph in, not so wide it crowds the page. `60vw` is the same guard the
+     drag itself stops at, for a width saved on a wide window and reopened on a
+     narrow one — the page beside the note has to stay readable. */
+  width: min(var(--notes-width, 22rem), 60vw);
+  /* Positions the handle below. */
+  position: relative;
+}
+
+/* The drag handle sits over the panel's inner edge rather than beside it: a
+   column of its own would push the editor in by its width. */
+.sidebar__resizer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 1;
+  width: 6px;
+  cursor: col-resize;
+  /* A touch on the handle drags it instead of scrolling the note. */
+  touch-action: none;
+}
+
+.sidebar__resizer:hover,
+.sidebar__resizer:focus-visible {
+  background: var(--accent);
+  outline: none;
+}
+
+/* While the edge is being dragged the pointer is only moving it — anything it
+   passes over must not end up selected. */
+.sidebar.sidebar--notes.sidebar--resizing {
+  user-select: none;
 }
 
 .notes {
@@ -1351,6 +1381,9 @@ body {
   }
 
   .sidebar.sidebar--notes {
-    width: min(90vw, 22rem);
+    /* The panel covers the pages here rather than sharing the row with them,
+       so the drag is capped by the window itself, not by what it leaves
+       beside it. */
+    width: min(90vw, var(--notes-width, 22rem));
   }
 }

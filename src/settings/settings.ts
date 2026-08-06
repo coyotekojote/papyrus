@@ -15,6 +15,29 @@ import { toError, type SettingsOperation } from "../backend-error";
 
 export const SETTINGS_VERSION = 1;
 
+/**
+ * How wide the notes panel may be dragged (issue #76), in CSS px. The minimum
+ * is about what a paragraph needs to still read as one; the maximum leaves
+ * enough of the window for the page beside it. The viewer clamps to these too
+ * — the drag and the stored value have to agree on what is reachable.
+ */
+export const NOTES_PANEL_MIN_WIDTH = 240;
+export const NOTES_PANEL_MAX_WIDTH = 720;
+
+/**
+ * What the panel was fixed at before it could be resized (22rem at 16px/rem),
+ * so a reader who never drags it sees no change.
+ */
+export const NOTES_PANEL_DEFAULT_WIDTH = 352;
+
+/** A width as it can actually be used: whole pixels, inside the range above. */
+export function clampNotesPanelWidth(width: number): number {
+  return Math.min(
+    Math.max(Math.round(width), NOTES_PANEL_MIN_WIDTH),
+    NOTES_PANEL_MAX_WIDTH,
+  );
+}
+
 export type TranslationProviderId = "claude" | "openai" | "deepl";
 
 export interface TranslationSettings {
@@ -45,6 +68,11 @@ export interface Settings {
    * once the reader has confirmed the outline actually lines up.
    */
   notesOutlineFollow: boolean;
+  /**
+   * Width of the notes panel in CSS px (issue #76), as the reader last dragged
+   * it. Not on the settings screen: the drag is the control.
+   */
+  notesPanelWidth: number;
 }
 
 export interface ModelSuggestion {
@@ -135,6 +163,7 @@ export function defaultSettings(): Settings {
     notesOutlineInsert: true,
     // Off by default (issue #74): see `notesOutlineFollow`'s own doc comment.
     notesOutlineFollow: false,
+    notesPanelWidth: NOTES_PANEL_DEFAULT_WIDTH,
   };
 }
 
@@ -181,6 +210,18 @@ function field(value: unknown, key: string): unknown {
 
 function booleanField(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+/**
+ * A stored panel width (issue #76), clamped into the range the handle can
+ * reach. Out of range is clamped rather than refused — a hand-edited extreme
+ * says "as wide as it goes" — but anything that is not a number at all has no
+ * width to clamp, so it takes the default.
+ */
+function notesPanelWidthField(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? clampNotesPanelWidth(value)
+    : fallback;
 }
 
 /** Keeps the entries naming a known provider with a usable model id. */
@@ -240,6 +281,10 @@ export function normalizeSettings(value: unknown): Settings {
     notesOutlineFollow: booleanField(
       field(value, "notesOutlineFollow"),
       defaults.notesOutlineFollow,
+    ),
+    notesPanelWidth: notesPanelWidthField(
+      field(value, "notesPanelWidth"),
+      defaults.notesPanelWidth,
     ),
   };
 }

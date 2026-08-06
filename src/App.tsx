@@ -367,6 +367,19 @@ function App() {
     [flushPendingPageSave],
   );
 
+  /**
+   * Stores the width the notes panel was dragged to (issue #76). The viewer
+   * only reports a width once a drag has settled, so this is one save per
+   * resize rather than one per frame.
+   */
+  const updateSettings = settings.update;
+  const handleNotesPanelWidthChange = useCallback(
+    (width: number) => {
+      updateSettings((current) => ({ ...current, notesPanelWidth: width }));
+    },
+    [updateSettings],
+  );
+
   const handleRemoveRecent = useCallback(
     (path: string) =>
       rememberRecentFiles((current) => removeRecentFile(current, path)),
@@ -399,6 +412,8 @@ function App() {
           defaultViewMode={settings.settings.defaultViewMode}
           notesOutlineInsert={settings.settings.notesOutlineInsert}
           notesOutlineFollow={settings.settings.notesOutlineFollow}
+          notesPanelWidth={settings.settings.notesPanelWidth}
+          onNotesPanelWidthChange={handleNotesPanelWidthChange}
           initialPage={openDocument.initialPage}
           onPageChange={handlePageChange}
           onClose={handleClose}

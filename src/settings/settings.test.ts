@@ -1,10 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clampNotesPanelWidth,
   defaultSettings,
   loadSettings,
   modelFor,
   normalizeSettings,
+  NOTES_PANEL_DEFAULT_WIDTH,
+  NOTES_PANEL_MAX_WIDTH,
+  NOTES_PANEL_MIN_WIDTH,
   providerInfo,
   saveSettings,
   SETTINGS_VERSION,
@@ -26,6 +30,7 @@ const stored: Settings = {
   },
   notesOutlineInsert: false,
   notesOutlineFollow: false,
+  notesPanelWidth: 480,
 };
 
 beforeEach(() => {
@@ -136,6 +141,74 @@ describe("normalizeSettings", () => {
       expect(settings.notesOutlineInsert).toBe(true);
       expect(settings.notesOutlineFollow).toBe(false);
     }
+  });
+
+  it("keeps a notes panel width inside the draggable range", () => {
+    for (const width of [NOTES_PANEL_MIN_WIDTH, 480, NOTES_PANEL_MAX_WIDTH]) {
+      expect(
+        normalizeSettings({ notesPanelWidth: width }).notesPanelWidth,
+      ).toBe(width);
+    }
+  });
+
+  it("clamps a notes panel width outside the draggable range", () => {
+    // Clamped rather than dropped: a hand-edited extreme means "as wide (or
+    // narrow) as it goes", and the default would look like the file was
+    // ignored.
+    const clamped: [number, number][] = [
+      [NOTES_PANEL_MIN_WIDTH - 1, NOTES_PANEL_MIN_WIDTH],
+      [0, NOTES_PANEL_MIN_WIDTH],
+      [-100, NOTES_PANEL_MIN_WIDTH],
+      [NOTES_PANEL_MAX_WIDTH + 1, NOTES_PANEL_MAX_WIDTH],
+      [10000, NOTES_PANEL_MAX_WIDTH],
+    ];
+    for (const [stored, expected] of clamped) {
+      expect(
+        normalizeSettings({ notesPanelWidth: stored }).notesPanelWidth,
+      ).toBe(expected);
+    }
+  });
+
+  it("rounds a fractional notes panel width to whole pixels", () => {
+    expect(normalizeSettings({ notesPanelWidth: 480.4 }).notesPanelWidth).toBe(
+      480,
+    );
+    expect(normalizeSettings({ notesPanelWidth: 480.5 }).notesPanelWidth).toBe(
+      481,
+    );
+  });
+
+  it("falls back to the default notes panel width for anything but a number", () => {
+    expect(defaultSettings().notesPanelWidth).toBe(NOTES_PANEL_DEFAULT_WIDTH);
+    for (const value of ["400", true, null, undefined, [400], NaN, Infinity]) {
+      expect(
+        normalizeSettings({ notesPanelWidth: value }).notesPanelWidth,
+      ).toBe(NOTES_PANEL_DEFAULT_WIDTH);
+    }
+  });
+});
+
+describe("clampNotesPanelWidth", () => {
+  it("leaves a width the panel can actually be dragged to alone", () => {
+    expect(clampNotesPanelWidth(NOTES_PANEL_MIN_WIDTH)).toBe(
+      NOTES_PANEL_MIN_WIDTH,
+    );
+    expect(clampNotesPanelWidth(NOTES_PANEL_MAX_WIDTH)).toBe(
+      NOTES_PANEL_MAX_WIDTH,
+    );
+    expect(clampNotesPanelWidth(NOTES_PANEL_DEFAULT_WIDTH)).toBe(
+      NOTES_PANEL_DEFAULT_WIDTH,
+    );
+  });
+
+  it("pulls a width past either end back to that end", () => {
+    expect(clampNotesPanelWidth(NOTES_PANEL_MIN_WIDTH - 0.6)).toBe(
+      NOTES_PANEL_MIN_WIDTH,
+    );
+    expect(clampNotesPanelWidth(NOTES_PANEL_MAX_WIDTH + 0.6)).toBe(
+      NOTES_PANEL_MAX_WIDTH,
+    );
+    expect(clampNotesPanelWidth(-1)).toBe(NOTES_PANEL_MIN_WIDTH);
   });
 });
 
