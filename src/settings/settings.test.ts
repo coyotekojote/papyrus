@@ -95,11 +95,14 @@ describe("normalizeSettings", () => {
     );
   });
 
-  it("defaults the outline settings to on", () => {
+  it("defaults outline insertion to on and outline follow to off", () => {
+    // Follow is opt-in (issue #74): it matches by exact title string against
+    // the PDF's own outline, which misleads more than it helps once that
+    // outline is coarse or the note's headings have since been edited.
     expect(defaultSettings().notesOutlineInsert).toBe(true);
-    expect(defaultSettings().notesOutlineFollow).toBe(true);
+    expect(defaultSettings().notesOutlineFollow).toBe(false);
     expect(normalizeSettings({}).notesOutlineInsert).toBe(true);
-    expect(normalizeSettings({}).notesOutlineFollow).toBe(true);
+    expect(normalizeSettings({}).notesOutlineFollow).toBe(false);
   });
 
   it("keeps an explicit false for either outline setting", () => {
@@ -111,14 +114,14 @@ describe("normalizeSettings", () => {
     expect(settings.notesOutlineFollow).toBe(false);
   });
 
-  it("falls back to the default for a non-boolean outline setting", () => {
+  it("falls back to each field's own default for a non-boolean outline setting", () => {
     for (const value of ["true", 0, null, undefined, {}]) {
       const settings = normalizeSettings({
         notesOutlineInsert: value,
         notesOutlineFollow: value,
       });
       expect(settings.notesOutlineInsert).toBe(true);
-      expect(settings.notesOutlineFollow).toBe(true);
+      expect(settings.notesOutlineFollow).toBe(false);
     }
   });
 });

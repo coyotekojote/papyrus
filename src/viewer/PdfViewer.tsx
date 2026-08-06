@@ -197,7 +197,11 @@ export interface PdfViewerProps {
   defaultViewMode?: ViewMode;
   /** Insert the PDF's outline as markdown headings into an empty note (#46). */
   notesOutlineInsert?: boolean;
-  /** Move the notes cursor to the heading of the section on screen (#46). */
+  /**
+   * Move the notes cursor to the heading of the section on screen (#46).
+   * Defaults to off (issue #74) — see `Settings.notesOutlineFollow`'s own
+   * doc comment for why.
+   */
   notesOutlineFollow?: boolean;
   /**
    * 1-based page to open on (issue #43), from the recent-files entry.
@@ -289,7 +293,7 @@ export function PdfViewer({
   defaultBinding = "left",
   defaultViewMode = "single",
   notesOutlineInsert = true,
-  notesOutlineFollow = true,
+  notesOutlineFollow = false,
   initialPage,
   onPageChange,
   onClose,

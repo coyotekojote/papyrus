@@ -236,7 +236,10 @@ async function flushScroll() {
 interface ViewerDefaults {
   binding?: Binding;
   viewMode?: ViewMode;
-  /** Issue #46; left at the component defaults (both on) unless overridden. */
+  /**
+   * Issue #46; left at the component defaults unless overridden —
+   * `notesOutlineInsert` on, `notesOutlineFollow` off (issue #74).
+   */
   notesOutlineInsert?: boolean;
   notesOutlineFollow?: boolean;
 }
@@ -2489,7 +2492,11 @@ describe("PdfViewer", () => {
           content: "",
           modifiedAtMs: 7,
         });
-        const { user } = renderViewer(PAGE_COUNT, notesOutline);
+        // Follow defaults to off (issue #74); this describe block is
+        // specifically about it, so it opts in explicitly.
+        const { user } = renderViewer(PAGE_COUNT, notesOutline, {
+          notesOutlineFollow: true,
+        });
         await user.click(screen.getByRole("button", { name: "メモ" }));
         const editor = (await screen.findByRole("textbox", {
           name: "メモ (markdown)",
@@ -2518,7 +2525,10 @@ describe("PdfViewer", () => {
           content: "",
           modifiedAtMs: 7,
         });
-        const { user } = renderViewer(PAGE_COUNT, wrapped);
+        // Follow defaults to off (issue #74); opted in explicitly, as above.
+        const { user } = renderViewer(PAGE_COUNT, wrapped, {
+          notesOutlineFollow: true,
+        });
         await user.click(screen.getByRole("button", { name: "メモ" }));
         const editor = (await screen.findByRole("textbox", {
           name: "メモ (markdown)",
@@ -2536,7 +2546,10 @@ describe("PdfViewer", () => {
           content: "",
           modifiedAtMs: 7,
         });
-        const { user } = renderViewer(PAGE_COUNT, blank);
+        // Follow defaults to off (issue #74); opted in explicitly, as above.
+        const { user } = renderViewer(PAGE_COUNT, blank, {
+          notesOutlineFollow: true,
+        });
         await user.click(screen.getByRole("button", { name: "メモ" }));
         const editor = (await screen.findByRole("textbox", {
           name: "メモ (markdown)",
