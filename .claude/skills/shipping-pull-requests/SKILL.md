@@ -1,18 +1,18 @@
 ---
 name: shipping-pull-requests
-description: papyrus で PR を作成し、CodeRabbit / Copilot のレビューが尽きるまで対応を繰り返してマージ可能な状態にする。「PR作って」「PR出して」「レビュー対応して」「レビューコメント見て」「レビューが終わるまで回して」と言われた時に使用。
+description: papyrus で PR を作成し、Copilot のレビューが尽きるまで対応を繰り返してマージ可能な状態にする。「PR作って」「PR出して」「レビュー対応して」「レビューコメント見て」「レビューが終わるまで回して」と言われた時に使用。
 ---
 
 # PR を作ってレビューが尽きるまで回す
 
-実装が終わった状態から、PR を出し、CodeRabbit のレビューに対応し、指摘が出なくなるまで繰り返す。
+実装が終わった状態から、PR を出し、Copilot のレビューに対応し、指摘が出なくなるまで繰り返す。
 
 ## 全体の流れ
 
 ```text
 1. ブランチを切ってコミット・push
 2. PR 作成
-3. CI とレビューが出揃うまで待つ        ← scripts/wait-for-review.sh
+3. CI が通るまで待つ                     ← scripts/wait-for-review.sh
 4. 未解決コメントを読む                  ← scripts/list-open-comments.sh
 5. 各コメントに「対応」か「対応しない理由」を返信
 6. 対応済みスレッドを解決する（Copilot は自動で解決しない）
@@ -52,26 +52,13 @@ npm run lint && npm run format:check && npm run test -- --run && npm run build
 cd src-tauri && mise exec -- cargo fmt --check && mise exec -- cargo clippy -- -D warnings && mise exec -- cargo test
 ```
 
-## 2. CI とレビューを待つ
+## 2. CI を待つ
 
 ```bash
 .claude/skills/shipping-pull-requests/scripts/wait-for-review.sh <PR番号> [タイムアウト秒]
 ```
 
-必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になり、かつ **現在の HEAD コミットに対する** CodeRabbit のレビューが完了するまでブロックする。終了コード: `0` 揃った / `1` タイムアウト / `2` CI かレビューが失敗 / `3` CodeRabbit がレート制限でレビューしなかった。
-
-レビューの完了判定には `CodeRabbit` という **commit status**（`Review in progress` → `success`）を使う。レビューの存在だけで判定すると、本文が空のレビューが先に API に現れるため、まだ進行中なのに完了と誤認する。`gh pr checks` には出るが check-run ではなく commit status なので、`/commits/<sha>/status` で取る。
-
-state だけでは足りず `description` も見る。同じ `success` でも中身が違う。
-
-| description           | 意味                                                         | スクリプト |
-| --------------------- | ------------------------------------------------------------ | ---------- |
-| `Review completed`    | 読まれた。レビューが投稿されていなくても、指摘が無かっただけ | `0`        |
-| `Review rate limited` | **読まれていない。** レート制限でレビューが飛ばされた        | `3`        |
-
-レビューの存在は完了条件にしない。指摘ゼロだと CodeRabbit はレビューを投稿しないため、存在を必須にすると永久に完了しない。status が `$head_sha` に対して引かれている以上、`success` はそのコミットが読まれたことを意味する。
-
-`3` で抜けたら、**それを「指摘なし」と読まない**。時間を置いてから（15 分ではまだ解けないことがある）PR に `@coderabbitai review` とコメントして依頼し直す。それでも `3` が続くなら、未レビューの差分の中身をユーザーに伝えて判断を仰ぐ。
+必須の CI 3 ジョブ（Frontend / Rust / Tauri build）が揃って `pass` になるまでブロックする。終了コード: `0` 通過 / `1` タイムアウト / `2` CI 失敗。
 
 必須ジョブ名はスクリプト内の `REQUIRED_CHECKS` にある。`.github/workflows/ci.yml` のジョブ名を変えたらここも直す（放置するとタイムアウトするまで `missing` のまま待ち続ける）。
 
@@ -84,6 +71,8 @@ gh run view --log-failed -R coyotekojote/papyrus   # 失敗ジョブのログ
 ```
 
 ## 3. 未解決コメントを読む
+
+Copilot はデフォルトブランチ向け PR に ruleset で自動レビューを付ける。CI 通過後、レビューが投稿されているか確認する。
 
 ```bash
 .claude/skills/shipping-pull-requests/scripts/list-open-comments.sh <PR番号>
@@ -99,18 +88,9 @@ PR 全体のサマリレビューも確認する。
 gh pr view <PR番号> --json reviews --jq '.reviews[] | "@\(.author.login) [\(.state)]\n\(.body)"'
 ```
 
-CodeRabbit のサマリに出る **`Actionable comments posted: N`** が、その周で対応すべき件数。
-
 ## 4. 一件ずつ判断して返信する
 
 指摘を鵜呑みにしない。**まず現在のコードに対して指摘が成立するか検証する。** 設定ファイルやライブラリの挙動に関する指摘なら、公式スキーマやドキュメントを実際に取得して裏を取る。
-
-例（CodeRabbit の設定スキーマを検証する）:
-
-```bash
-curl -sL https://coderabbit.ai/integrations/schema.v2.json -o /tmp/schema.json
-node -e "const s=require('/tmp/schema.json'); console.log(JSON.stringify(s.properties.reviews.properties.<key>,null,1))"
-```
 
 判断は3通り。**どれを選んでも必ず返信する。黙って無視しない。**
 
@@ -139,7 +119,7 @@ EOF
 
 ## 5. スレッドを解決する
 
-CodeRabbit は対応を確認すると自分でスレッドを解決するが、**Copilot は解決しない**。放置すると未解決スレッドが残り続け、収束判定が永久に成立しない。
+**Copilot は対応を確認しても自分でスレッドを解決しない。** 放置すると未解決スレッドが残り続け、収束判定が永久に成立しない。
 
 対応と返信が済んだスレッドは自分で解決する。`<THREAD_ID>` は `list-open-comments.sh` の `resolve-id`。
 
@@ -154,25 +134,18 @@ gh api graphql -f query='
 
 ## 6. 収束判定
 
-push すると CodeRabbit が増分レビューを返すので、2 に戻る。次のすべてを満たしたら完了:
+push したら 2 に戻る。次のすべてを満たしたら完了:
 
 - `list-open-comments.sh` の出力が空
-- `wait-for-review.sh` が `0` で終わっている（= `CodeRabbit` の commit status が `success`）
-- 直近の CodeRabbit レビューに新しい指摘がない（レビュー本文が空、`Actionable comments posted: 0`、または**レビュー自体が投稿されていない**）
 - CI が全て通過
 
-指摘が何も無いと CodeRabbit はレビューを投稿せず、commit status を `Review completed` にするだけで終わる。この場合 `gh pr view --json reviews` にそのコミットのレビューは現れないが、それは「まだ来ていない」ではなく「指摘が無かった」なので、status が権威。
+Copilot のレビューは push のたびに必ず来るとは限らない。CI 通過後しばらく（数分）待ってレビューも新規スレッドも無ければ、それ以上は待たずに収束と判断してよい。
 
-commit status が `pending` の間は判断しない。レビューがまだ出ていないだけを「指摘なし」と読むと、収束していないのに完了と報告することになる。`success` でも `description` が `Review rate limited` なら同じで、そのコミットはまだ読まれていない（`wait-for-review.sh` は `3` で抜ける）。
-
-同じ指摘が3周以上続く、または CodeRabbit と自分の判断が食い違って決着しない場合は、ループを止めてユーザーに判断を仰ぐ。
+同じ指摘が3周以上続く、または bot と自分の判断が食い違って決着しない場合は、ループを止めてユーザーに判断を仰ぐ。
 
 ## リポジトリ固有のメモ
 
-- CodeRabbit App はインストール済み。設定は `.coderabbit.yaml`（レビュー言語は日本語、`profile: chill`、Request changes なし）
-- CodeRabbit は `commit_status`（既定で有効）により `CodeRabbit` という commit status を出す。これが `pending` の間はまだレビュー中。**新しいレビューが来ていないのではなく、まだ出ていない**ので待つ
-- レート制限あり。短時間に何周も回すと `Review rate limited`（state は `success`）でレビューが飛ばされる。この状態で `@coderabbitai review` と依頼しても「再レビューします / Review finished」と返ってくるだけで実際には読まれないので、時間を置いてから依頼し直す
-- Finishing Touches は全て無効化済み。CodeRabbit はコードを書かない。修正は必ず自分で入れる
-- Copilot もレビューを付けることがあるが、毎回は走らない。待機条件には含めない。付いていたら同じ手順で対応する
+- レビュー bot は Copilot のみ。ruleset「Copilot review for default branch」で `main` 向け PR に自動でレビューが付く。CodeRabbit は使わない（リポジトリを private 化した際に廃止。過去の PR に痕跡が残っているだけ）
+- Copilot はコードを書かない。修正は必ず自分で入れる
 - CI は macOS ランナーで3ジョブ。Tauri build は frontend / rust の後に走るため全体で数分かかる
 - `format:check` は `prettier --check .` なので `.claude/**` の Markdown も対象。このスキル自身を編集したときも Frontend CI が落ちうる（表を書き足すと桁揃えを要求される）

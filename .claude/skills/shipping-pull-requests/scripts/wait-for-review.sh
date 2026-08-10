@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# PR の CI と CodeRabbit のレビューが、現在の HEAD コミットに対して出揃うまで待つ。
+# PR の CI が、現在の HEAD コミットに対して出揃うまで待つ。
 #
 #   使い方: wait-for-review.sh <PR番号> [タイムアウト秒]
 #
 # 標準出力に進捗を1行ずつ出し、揃ったら 0 で終了する。
-# タイムアウトした場合は 1、CI が失敗またはスキップされた場合は 2、
-# CodeRabbit がレート制限でレビューしなかった場合は 3 で終了する。
+# タイムアウトした場合は 1、CI が失敗またはスキップされた場合は 2 で終了する。
 set -euo pipefail
 
 PR="${1:?PR番号を指定してください}"
@@ -21,106 +20,40 @@ REQUIRED_CHECKS='[
   "Tauri build (no bundle)"
 ]'
 
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
 head_sha="$(gh pr view "$PR" --json headRefOid -q .headRefOid)"
 echo "HEAD $head_sha を待機中"
 
 deadline=$((SECONDS + TIMEOUT))
-ci_done=false
-review_done=false
 ci_state='(未取得)'
 
 while ((SECONDS < deadline)); do
-  # 待機中に push が入ると、CI は新 HEAD、レビューは旧 HEAD という食い違った
-  # 組み合わせで揃ってしまう。HEAD が動いたら最初からやり直す。
+  # 待機中に push が入ると旧 HEAD の結果を見てしまう。HEAD が動いたらやり直す。
   current_sha="$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null || echo "$head_sha")"
   if [[ "$current_sha" != "$head_sha" ]]; then
     echo "HEAD が $current_sha に更新されたため待機し直します"
     head_sha="$current_sha"
-    ci_done=false
-    review_done=false
     ci_state='(未取得)'
   fi
 
-  if ! $ci_done; then
-    checks="$(gh pr checks "$PR" --json name,bucket 2>/dev/null || echo '[]')"
-    # 必須ジョブごとに bucket を引く。まだ登録されていないジョブは "missing"。
-    ci_state="$(jq -c --argjson req "$REQUIRED_CHECKS" \
-      '[$req[] as $n | {name: $n, bucket: ([.[] | select(.name == $n) | .bucket] | first // "missing")}]' \
-      <<<"$checks")"
+  checks="$(gh pr checks "$PR" --json name,bucket 2>/dev/null || echo '[]')"
+  # 必須ジョブごとに bucket を引く。まだ登録されていないジョブは "missing"。
+  ci_state="$(jq -c --argjson req "$REQUIRED_CHECKS" \
+    '[$req[] as $n | {name: $n, bucket: ([.[] | select(.name == $n) | .bucket] | first // "missing")}]' \
+    <<<"$checks")"
 
-    bad="$(jq -r '[.[] | select(.bucket | IN("fail", "cancel", "skipping")) | "\(.name)=\(.bucket)"] | join(", ")' <<<"$ci_state")"
-    if [[ -n "$bad" ]]; then
-      echo "CI 失敗: $bad"
-      exit 2
-    fi
-    if jq -e 'all(.bucket == "pass")' <<<"$ci_state" >/dev/null; then
-      ci_done=true
-      echo "CI 通過 (必須 $(jq 'length' <<<"$ci_state") ジョブ)"
-    fi
+  bad="$(jq -r '[.[] | select(.bucket | IN("fail", "cancel", "skipping")) | "\(.name)=\(.bucket)"] | join(", ")' <<<"$ci_state")"
+  if [[ -n "$bad" ]]; then
+    echo "CI 失敗: $bad"
+    exit 2
   fi
-
-  if ! $review_done; then
-    # CodeRabbit は commit status ("CodeRabbit") をレビュー中 pending、完了で
-    # success にする。レビューの存在だけを見ると、本文が空のレビューが先に
-    # API へ現れる場合があり、まだ進行中なのに完了と誤認する。status が権威。
-    # combined status API は context ごとに最新1件を返すが、配列の順序に
-    # 頼らずに済むよう updated_at で最新を取る。statuses は 1 ページ 30 件で
-    # 切れるので、全ページを集約してから絞る (--slurp は --jq と併用できない
-    # ため、外部の jq に渡す)。
-    cr="$(gh api "repos/$REPO/commits/$head_sha/status" --paginate --slurp 2>/dev/null \
-      | jq -r '([.[] | .statuses[] | select(.context == "CodeRabbit")] | max_by(.updated_at)) as $s
-               | {state: ($s.state // "missing"), description: ($s.description // "")}' \
-      2>/dev/null || echo '{"state":"missing","description":""}')"
-    cr_status="$(jq -r .state <<<"$cr")"
-    cr_description="$(jq -r .description <<<"$cr")"
-
-    # レート制限に当たると、CodeRabbit はレビューを実行しないまま status を
-    # success にし、description にその旨を書く。state だけを見ると完了と
-    # 見分けが付かないが、待ってもレビューは出てこないので即座に知らせる。
-    if [[ "$cr_status" == "success" ]] &&
-      [[ "$(tr '[:upper:]' '[:lower:]' <<<"$cr_description")" == *"rate limit"* ]]; then
-      echo "CodeRabbit がレート制限でレビューしていません: $cr_description"
-      echo "  CI=${ci_done}。時間を置いてから PR に '@coderabbitai review' と"
-      echo "  コメントしてレビューを依頼し直してください。"
-      exit 3
-    fi
-
-    case "$cr_status" in
-      failure | error)
-        echo "CodeRabbit のレビューが失敗: $cr_status"
-        exit 2
-        ;;
-      success)
-        # status は $head_sha に対して引いているので、success の時点でこの
-        # コミットは読まれている。指摘が何も無いと CodeRabbit はレビューを
-        # 投稿しないため、レビューの存在を必須にすると永久に完了しない。
-        review_done=true
-
-        # 見つかれば時刻を出す。commit_id で照合するのは、rebase や
-        # cherry-pick でコミット日時が過去のまま push された場合に
-        # submitted_at の比較だと旧レビューを取り違えるため。
-        reviews="$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate --slurp 2>/dev/null || echo '[]')"
-        latest="$(jq -r --arg sha "$head_sha" \
-          '[.[][] | select(.user.login == "coderabbitai[bot]" and .commit_id == $sha and .submitted_at != null) | .submitted_at]
-           | sort | last // empty' <<<"$reviews")"
-        if [[ -n "$latest" ]]; then
-          echo "CodeRabbit のレビュー完了 ($latest)"
-        else
-          echo "CodeRabbit のレビュー完了 (レビューの投稿なし: $cr_description)"
-        fi
-        ;;
-    esac
-  fi
-
-  if $ci_done && $review_done; then
+  if jq -e 'all(.bucket == "pass")' <<<"$ci_state" >/dev/null; then
+    echo "CI 通過 (必須 $(jq 'length' <<<"$ci_state") ジョブ)"
     exit 0
   fi
   sleep "$POLL_INTERVAL"
 done
 
-echo "タイムアウト (${TIMEOUT}s): CI=$ci_done レビュー=$review_done"
+echo "タイムアウト (${TIMEOUT}s)"
 # missing のまま終わった場合は ci.yml のジョブ名と REQUIRED_CHECKS のずれを疑う。
 jq -r '.[] | select(.bucket != "pass") | "  \(.name): \(.bucket)"' <<<"$ci_state" 2>/dev/null || true
-$review_done || echo "  CodeRabbit (commit status): ${cr_status:-未取得}"
 exit 1
