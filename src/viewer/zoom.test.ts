@@ -11,6 +11,7 @@ import {
   MIN_ZOOM,
   pinchZoom,
   steppedZoom,
+  ZOOM_STEPS,
   zoomCommandForKey,
 } from "./zoom";
 
@@ -35,20 +36,43 @@ describe("clampZoom", () => {
   });
 });
 
+describe("ZOOM_STEPS", () => {
+  it("rises monotonically from MIN_ZOOM to MAX_ZOOM", () => {
+    expect(ZOOM_STEPS.at(0)).toBe(MIN_ZOOM);
+    expect(ZOOM_STEPS.at(-1)).toBe(MAX_ZOOM);
+    for (let i = 1; i < ZOOM_STEPS.length; i += 1) {
+      expect(ZOOM_STEPS[i]).toBeGreaterThan(ZOOM_STEPS[i - 1]);
+    }
+  });
+
+  it("keeps every stop distinct once rounded to the percent the toolbar shows", () => {
+    const percents = ZOOM_STEPS.map((step) => Math.round(step * 100));
+    expect(new Set(percents).size).toBe(ZOOM_STEPS.length);
+  });
+});
+
 describe("steppedZoom", () => {
   it("moves to the next stop up", () => {
-    expect(steppedZoom(1, 1)).toBe(1.25);
+    expect(steppedZoom(1, 1)).toBe(1.1);
     expect(steppedZoom(2, 1)).toBe(2.5);
   });
 
   it("moves to the next stop down", () => {
-    expect(steppedZoom(1, -1)).toBe(0.75);
+    expect(steppedZoom(1, -1)).toBe(0.9);
     expect(steppedZoom(2.5, -1)).toBe(2);
   });
 
   it("snaps a value between stops onto the neighbouring stop", () => {
-    expect(steppedZoom(1.1, 1)).toBe(1.25);
-    expect(steppedZoom(1.1, -1)).toBe(1);
+    expect(steppedZoom(1.05, 1)).toBe(1.1);
+    expect(steppedZoom(1.05, -1)).toBe(1);
+  });
+
+  it("only nudges a fit zoom to the neighbouring stop, not a stop away (issue #77)", () => {
+    // A fit zoom lands wherever the viewport puts it; one press should move by
+    // the width of a stop, not skip most of the 50-100% band.
+    expect(steppedZoom(0.52, 1)).toBe(0.6);
+    expect(steppedZoom(0.73, 1)).toBe(0.8);
+    expect(steppedZoom(0.73, -1)).toBe(0.7);
   });
 
   it("stays put at the bounds", () => {
@@ -190,17 +214,17 @@ describe("zoomCommandForKey", () => {
 
 describe("applyZoomCommand", () => {
   it("steps up and down from the effective zoom, going manual", () => {
-    expect(applyZoomCommand(1, "in")).toEqual({ mode: "manual", value: 1.25 });
+    expect(applyZoomCommand(1, "in")).toEqual({ mode: "manual", value: 1.1 });
     expect(applyZoomCommand(1, "out")).toEqual({
       mode: "manual",
-      value: 0.75,
+      value: 0.9,
     });
   });
 
   it("steps from whatever effective zoom it is given, e.g. a fit zoom", () => {
     expect(applyZoomCommand(0.73, "in")).toEqual({
       mode: "manual",
-      value: 0.75,
+      value: 0.8,
     });
   });
 

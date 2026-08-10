@@ -6,9 +6,21 @@ export const MIN_ZOOM = 0.25;
 export const MAX_ZOOM = 6;
 export const DEFAULT_ZOOM = 1;
 
-/** Discrete stops used by the Cmd/Ctrl +/- shortcuts and the toolbar buttons. */
+/**
+ * Discrete stops used by the Cmd/Ctrl +/- shortcuts and the toolbar buttons.
+ * Fine below 200% and coarser above it (issue #77): a fit zoom lands somewhere
+ * arbitrary in the 50-100% band, and stepping from it used to jump 25% at a
+ * time, overshooting whatever the reader was aiming for. 10% stops there — and
+ * 10-25% through the reading range up to 200% — let `+`/`-` settle on a zoom,
+ * while the sparser stops past 200% keep a big magnification from turning into
+ * a dozen presses. Pinching still covers the range continuously. Every stop
+ * must round to a distinct whole percent, since that is how the toolbar
+ * labels it; the ends stay pinned to MIN_ZOOM/MAX_ZOOM so `steppedZoom` bottoms
+ * and tops out exactly at the clamp.
+ */
 export const ZOOM_STEPS: readonly number[] = [
-  0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6,
+  0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3,
+  3.5, 4, 5, 6,
 ];
 
 /** Zoom applied per unit of pinch (ctrl+wheel) delta. */

@@ -442,9 +442,9 @@ describe("PdfViewer", () => {
     const { user } = renderViewer();
 
     await user.click(screen.getByRole("button", { name: "拡大" }));
-    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "110%" })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "125%" }));
+    await user.click(screen.getByRole("button", { name: "110%" }));
     expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
   });
 
@@ -452,7 +452,7 @@ describe("PdfViewer", () => {
     const { user } = renderViewer();
 
     await user.keyboard("{Control>}={/Control}");
-    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "110%" })).toBeInTheDocument();
 
     await user.keyboard("{Control>}-{/Control}");
     expect(screen.getByRole("button", { name: "100%" })).toBeInTheDocument();
@@ -465,7 +465,7 @@ describe("PdfViewer", () => {
   it("pinches the zoom in and out with two fingers", async () => {
     const { user } = renderViewer();
     await user.click(screen.getByRole("button", { name: "拡大" }));
-    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "110%" })).toBeInTheDocument();
 
     const track = scroller();
     // Two fingers 100px apart, spreading to 200px apart: the gesture doubles
@@ -473,11 +473,11 @@ describe("PdfViewer", () => {
     fireEvent(track, touch("pointerdown", 1, { x: 100, y: 100 }));
     fireEvent(track, touch("pointerdown", 2, { x: 200, y: 100 }));
     fireEvent(window, touch("pointermove", 2, { x: 300, y: 100 }));
-    expect(screen.getByRole("button", { name: "250%" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "220%" })).toBeInTheDocument();
 
     // Pinching back in reaches the same zoom the gesture started from.
     fireEvent(window, touch("pointermove", 2, { x: 200, y: 100 }));
-    expect(screen.getByRole("button", { name: "125%" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "110%" })).toBeInTheDocument();
 
     fireEvent(window, touch("pointerup", 1, { x: 100, y: 100 }));
     fireEvent(window, touch("pointerup", 2, { x: 200, y: 100 }));
@@ -491,7 +491,7 @@ describe("PdfViewer", () => {
 
     expect(vi.mocked(doc.renderPage).mock.calls.length).toBeGreaterThan(before);
     const lastCall = vi.mocked(doc.renderPage).mock.calls.at(-1);
-    expect(lastCall?.[1].scale).toBe(1.25);
+    expect(lastCall?.[1].scale).toBe(1.1);
   });
 
   describe("fit zoom (issue #68)", () => {
@@ -538,10 +538,10 @@ describe("PdfViewer", () => {
 
       await user.click(screen.getByRole("button", { name: "拡大" }));
       // steppedZoom moves from the effective 52% to the next stop above it.
-      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "60%" })).toBeInTheDocument();
 
       resizeViewport(1000);
-      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "60%" })).toBeInTheDocument();
     });
 
     it("Cmd+0 hands control back to fit, not a fixed 100%", async () => {
@@ -549,7 +549,7 @@ describe("PdfViewer", () => {
       resizeViewport(100);
 
       await user.click(screen.getByRole("button", { name: "拡大" }));
-      expect(screen.getByRole("button", { name: "75%" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "60%" })).toBeInTheDocument();
 
       // Meta (not Control): the Ctrl variant is already covered by the
       // pre-existing shortcut test above; this exercises the metaKey path.
