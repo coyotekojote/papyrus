@@ -159,6 +159,10 @@ pub struct Settings {
     /// Insert the PDF's outline as markdown headings into an empty note (#46).
     pub notes_outline_insert: bool,
     /// Move the notes cursor to the heading of the section on screen (#46).
+    /// Matching is by exact title string against the PDF's own outline, which
+    /// misleads more than it helps once that outline is coarse or the note's
+    /// headings have since been edited — off by default (issue #74), opt-in
+    /// once the reader has confirmed the outline actually lines up.
     pub notes_outline_follow: bool,
     /// Width of the notes panel in CSS px (#76), as the reader last dragged it.
     pub notes_panel_width: u32,
@@ -172,7 +176,12 @@ impl Default for Settings {
             default_view_mode: ViewMode::default(),
             translation: TranslationSettings::default(),
             notes_outline_insert: true,
-            notes_outline_follow: true,
+            // Off by default (issue #74): see `notes_outline_follow`'s own doc
+            // comment. This has to agree with `defaultSettings()` in
+            // src/settings/settings.ts — a settings file without the key
+            // falls back to *this* value and the frontend passes whatever the
+            // backend returns straight through (issue #79).
+            notes_outline_follow: false,
             notes_panel_width: DEFAULT_NOTES_PANEL_WIDTH,
         }
     }
@@ -395,7 +404,8 @@ mod tests {
         // No model chosen: the translation layer picks the provider's own.
         assert!(settings.translation.models.is_empty());
         assert!(settings.notes_outline_insert);
-        assert!(settings.notes_outline_follow);
+        // Insert defaults on, follow defaults off (issue #74).
+        assert!(!settings.notes_outline_follow);
         assert_eq!(settings.notes_panel_width, DEFAULT_NOTES_PANEL_WIDTH);
     }
 
@@ -482,7 +492,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_falls_back_to_defaults_for_unusable_outline_settings() {
+    fn parse_keeps_an_explicit_true_for_the_follow_setting_the_reader_opted_into() {
+        // Follow defaults to false (issue #74), so the false-for-both case
+        // above cannot tell "kept the explicit value" apart from "fell back to
+        // the default". Opting back in is what actually exercises it.
+        let settings = parse_settings(r#"{ "notesOutlineFollow": true }"#);
+        assert!(settings.notes_outline_follow);
+    }
+
+    #[test]
+    fn parse_falls_back_to_each_fields_own_default_for_unusable_outline_settings() {
         for raw in [
             r#"{ "notesOutlineInsert": "false", "notesOutlineFollow": 0 }"#,
             r#"{ "notesOutlineInsert": null, "notesOutlineFollow": null }"#,
@@ -490,7 +509,10 @@ mod tests {
         ] {
             let settings = parse_settings(raw);
             assert!(settings.notes_outline_insert, "raw: {raw}");
-            assert!(settings.notes_outline_follow, "raw: {raw}");
+            // Not a shared default: insert is on, follow is off (issue #74).
+            // `{}` is the case issue #79 was actually about — a settings file
+            // written before the key existed.
+            assert!(!settings.notes_outline_follow, "raw: {raw}");
         }
     }
 
