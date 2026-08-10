@@ -11,6 +11,13 @@
 # 終了コード: 0=差し替え完了 / 1=前提条件エラー / 2=起動中のため中断
 set -euo pipefail
 
+# osascript / ditto / codesign / open と .app バンドルの前提が macOS 専用。
+# 他 OS では rm -rf まで進む前に止める。
+if [[ "$(uname -s)" != Darwin ]]; then
+  echo "このスクリプトは macOS 専用です (検出: $(uname -s))" >&2
+  exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -27,6 +34,11 @@ while (($#)); do
   esac
   shift
 done
+
+# 差し替え先の不備は、ビルドに1分かけた後の ditto で初めて分かると原因が
+# 追いにくい。書き込み権限まで含めてここで確かめる。
+[[ -d "$DEST_DIR" ]] || { echo "インストール先が存在しません: $DEST_DIR" >&2; exit 1; }
+[[ -w "$DEST_DIR" ]] || { echo "インストール先に書き込めません: $DEST_DIR" >&2; exit 1; }
 
 BUNDLE="$REPO_ROOT/src-tauri/target/release/bundle/macos/Papyrus.app"
 DEST="$DEST_DIR/Papyrus.app"
@@ -97,9 +109,15 @@ fi
 # --- 差し替え -----------------------------------------------------------------
 # ditto は拡張属性と署名を保ったままコピーする。cp -R では ad-hoc 署名が
 # 壊れて起動できなくなることがある。
+# 先に隣へコピーしてから入れ替える。ditto が途中で失敗しても、既存の
+# アプリが消えたまま残らないようにするため。
 echo "$DEST へ差し替えます"
+STAGING="$DEST_DIR/.Papyrus.app.installing"
+trap 'rm -rf "$STAGING"' EXIT
+rm -rf "$STAGING"
+ditto "$BUNDLE" "$STAGING"
 rm -rf "$DEST"
-ditto "$BUNDLE" "$DEST"
+mv "$STAGING" "$DEST"
 
 # Tauri の ad-hoc 署名はバンドルに _CodeSignature を作らないため、
 # codesign --verify は正常なビルドでも "code has no resources" で失敗する。
