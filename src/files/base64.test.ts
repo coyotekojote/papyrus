@@ -3,6 +3,7 @@ import { blobToBase64 } from "./base64";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("blobToBase64", () => {
@@ -29,18 +30,18 @@ describe("blobToBase64", () => {
   });
 
   it("fails rather than hand back an empty payload it cannot vouch for", async () => {
-    const reader = {
-      error: null,
-      result: "not-a-data-url",
-      onload: null as (() => void) | null,
-      onerror: null as (() => void) | null,
+    // A class, not an object literal: the code under test calls
+    // `new FileReader()`, so the replacement has to be constructible.
+    class ReaderWithoutADataUrl {
+      error = null;
+      result = "not-a-data-url";
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
       readAsDataURL() {
         this.onload?.();
-      },
-    };
-    vi.spyOn(globalThis, "FileReader").mockImplementation(
-      () => reader as unknown as FileReader,
-    );
+      }
+    }
+    vi.stubGlobal("FileReader", ReaderWithoutADataUrl);
 
     await expect(
       blobToBase64(new Blob([new Uint8Array([1])], { type: "image/png" })),
