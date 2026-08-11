@@ -16,8 +16,12 @@ SRC="src-tauri/icons/icon.svg"
 # --- SVG を 1024px の PNG にする ----------------------------------------------
 # tauri icon は PNG しか受け取らないため、一度ラスタライズする必要がある。
 # rsvg-convert があれば使い、なければ Chrome のヘッドレスで代用する。
-PNG="$(mktemp -t papyrus-icon).png"
-trap 'rm -f "$PNG"' EXIT
+# tauri icon は拡張子で入力形式を判断するため、ファイル名は .png でなければ
+# ならない。mktemp のファイル名に後付けすると元の空ファイルが残るので、
+# ディレクトリごと作って中に置く。
+TMPDIR_ICON="$(mktemp -d -t papyrus-icon)"
+PNG="$TMPDIR_ICON/icon.png"
+trap 'rm -rf "$TMPDIR_ICON"' EXIT
 
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 if command -v rsvg-convert >/dev/null 2>&1; then

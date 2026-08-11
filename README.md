@@ -60,3 +60,6 @@ mise exec -- cargo clippy -- -D warnings
 ```sh
 scripts/generate-icons.sh
 ```
+
+SVG のラスタライズに `rsvg-convert`（`brew install librsvg`）か Google Chrome の
+どちらかが必要です。両方あれば `rsvg-convert` を使います。
