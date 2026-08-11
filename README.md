@@ -51,3 +51,15 @@ cd src-tauri
 mise exec -- cargo fmt --check
 mise exec -- cargo clippy -- -D warnings
 ```
+
+## アプリアイコン
+
+原本は `src-tauri/icons/icon.svg` です。他の PNG はすべてここから生成されるので、
+アイコンを変えるときは SVG を編集してから次を実行します。
+
+```sh
+scripts/generate-icons.sh
+```
+
+SVG のラスタライズに `rsvg-convert`（`brew install librsvg`）か Google Chrome の
+どちらかが必要です。両方あれば `rsvg-convert` を使います。
